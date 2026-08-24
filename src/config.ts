@@ -1,6 +1,12 @@
+const FALLBACK_CONTRACT_ADDRESS =
+  '0x09324215eEC452600F72Eb1D63ee6Bb48E92740f' as const
+
+const envAddress = (import.meta.env.VITE_CONTRACT_ADDRESS ?? '').trim()
+
 export const CONTRACT_ADDRESS =
-  (import.meta.env.VITE_CONTRACT_ADDRESS as `0x${string}` | undefined) ??
-  '0x09324215eEC452600F72Eb1D63ee6Bb48E92740f'
+  /^0x[a-fA-F0-9]{40}$/.test(envAddress)
+    ? (envAddress as `0x${string}`)
+    : FALLBACK_CONTRACT_ADDRESS
 
 export const EXPLORER_BASE = 'https://explorer-studio.genlayer.com'
 
