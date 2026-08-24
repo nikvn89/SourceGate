@@ -148,9 +148,9 @@ export default function App() {
       setClaim(nextClaim)
       setSources(nextSources)
       setPairs([...nextPairs].reverse())
-      setIsSample(mode === 'sample' || id === PUBLIC_SAMPLE_CLAIM_ID)
+      setIsSample(mode === 'sample')
 
-      if (mode === 'workspace' && id !== PUBLIC_SAMPLE_CLAIM_ID) {
+      if (mode === 'workspace') {
         window.localStorage.setItem(LAST_CLAIM_KEY, String(id))
       }
 
@@ -166,11 +166,9 @@ export default function App() {
   }, [config?.max_sources_per_claim])
 
   const refresh = useCallback(async () => {
-    await loadClaim(
-      claimId,
-      claimId === PUBLIC_SAMPLE_CLAIM_ID ? 'sample' : 'workspace',
-    )
-  }, [claimId, loadClaim])
+    if (!claim) return
+    await loadClaim(claimId, isSample ? 'sample' : 'workspace')
+  }, [claim, claimId, isSample, loadClaim])
 
   useEffect(() => {
     void getConfig()
@@ -179,13 +177,38 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!config) return
+
     const saved = Number(window.localStorage.getItem(LAST_CLAIM_KEY) ?? '0')
-    if (Number.isInteger(saved) && saved > PUBLIC_SAMPLE_CLAIM_ID) {
+    const hasSavedWorkspace =
+      Number.isInteger(saved) &&
+      saved > 0 &&
+      saved <= config.claim_count
+
+    if (hasSavedWorkspace) {
       void loadClaim(saved, 'workspace')
-    } else {
-      void loadClaim(PUBLIC_SAMPLE_CLAIM_ID, 'sample')
+      return
     }
-  }, [loadClaim])
+
+    if (
+      PUBLIC_SAMPLE_CLAIM_ID > 0 &&
+      PUBLIC_SAMPLE_CLAIM_ID <= config.claim_count
+    ) {
+      void loadClaim(PUBLIC_SAMPLE_CLAIM_ID, 'sample')
+      return
+    }
+
+    // Fresh deployment: no claim exists yet. Do not call get_claim(1),
+    // because the contract correctly rejects a non-existent id.
+    setClaim(null)
+    setSources([])
+    setPairs([])
+    setIsSample(false)
+    setClaimId(0)
+    setClaimInput('')
+    setError('')
+    setLoading(false)
+  }, [config, loadClaim])
 
   useEffect(() => {
     if (!window.ethereum) return
@@ -586,13 +609,13 @@ export default function App() {
 
         <div className="sidebar-claim-card">
           <div className="sidebar-claim-top">
-            <span>{isSample ? 'SAMPLE CLAIM' : account && !isOwner ? 'PUBLIC CLAIM' : 'WORKSPACE'}</span>
+            <span>{!claim ? 'EMPTY REGISTRY' : isSample ? 'SAMPLE CLAIM' : account && !isOwner ? 'PUBLIC CLAIM' : 'WORKSPACE'}</span>
             <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
               {claim?.verified ? 'VERIFIED' : 'BUILDING'}
             </b>
           </div>
-          <strong>{claim ? `Claim #${claim.claim_id}` : 'Loading…'}</strong>
-          <p>{claim ? shortText(claim.text, 82) : 'Reading contract state…'}</p>
+          <strong>{claim ? `Claim #${claim.claim_id}` : config ? 'No claims yet' : 'Loading…'}</strong>
+          <p>{claim ? shortText(claim.text, 82) : config ? 'Connect a wallet and create the first claim.' : 'Reading contract state…'}</p>
           <div className="claim-progress"><div style={{ width: `${verificationPct}%` }} /></div>
           <small>
             {claim
@@ -650,13 +673,13 @@ export default function App() {
 
               <div className="hero-claim-card">
                 <div className="hero-claim-top">
-                  <span>{isSample ? 'READ-ONLY SAMPLE' : account && !isOwner ? 'PUBLIC CLAIM' : 'CURRENT CLAIM'}</span>
+                  <span>{!claim ? 'EMPTY REGISTRY' : isSample ? 'READ-ONLY SAMPLE' : account && !isOwner ? 'PUBLIC CLAIM' : 'CURRENT CLAIM'}</span>
                   <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
                     {claim?.verified ? 'VERIFIED' : 'BUILDING'}
                   </b>
                 </div>
-                <strong>{claim ? `Claim #${claim.claim_id}` : 'Loading…'}</strong>
-                <p>{claim ? shortText(claim.text, 115) : 'Reading contract state…'}</p>
+                <strong>{claim ? `Claim #${claim.claim_id}` : config ? 'No public sample yet' : 'Loading…'}</strong>
+                <p>{claim ? shortText(claim.text, 115) : config ? 'This deployment has no claims yet. Create the first workspace below.' : 'Reading contract state…'}</p>
                 <div className="claim-progress light"><div style={{ width: `${verificationPct}%` }} /></div>
                 <div className="hero-claim-metrics">
                   <span><b>{claim?.independent_pairs ?? 0}/{claim?.required_pairs ?? 2}</b> pairs</span>
@@ -667,9 +690,9 @@ export default function App() {
           ) : (
             <section className="claim-strip-v4">
               <div>
-                <span className="section-eyebrow">{isSample ? 'READ-ONLY SAMPLE' : account && !isOwner ? 'PUBLIC CLAIM' : 'CURRENT CLAIM'}</span>
-                <strong>{claim ? `Claim #${claim.claim_id}` : 'Loading…'}</strong>
-                <p>{claim ? shortText(claim.text, 150) : 'Reading contract state…'}</p>
+                <span className="section-eyebrow">{!claim ? 'EMPTY REGISTRY' : isSample ? 'READ-ONLY SAMPLE' : account && !isOwner ? 'PUBLIC CLAIM' : 'CURRENT CLAIM'}</span>
+                <strong>{claim ? `Claim #${claim.claim_id}` : config ? 'No claim loaded' : 'Loading…'}</strong>
+                <p>{claim ? shortText(claim.text, 150) : config ? 'Create a claim or load an existing id.' : 'Reading contract state…'}</p>
               </div>
               <div className="claim-strip-right">
                 <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
@@ -751,7 +774,9 @@ export default function App() {
                 <div className="overview-side-stack">
                   <article className="surface-card">
                     <div className="surface-head"><div><span className="section-eyebrow">OPEN</span><h2>Existing claim</h2></div></div>
-                    <p className="surface-note">Claim #1 is the verified public sample and remains read-only in this interface.</p>
+                    <p className="surface-note">{config && config.claim_count === 0
+                    ? 'No claims exist on this deployment yet. Create the first workspace.'
+                    : 'Claim #1 is the default public sample and remains read-only in this interface.'}</p>
                     <label>CLAIM ID</label>
                     <div className="inline-control">
                       <input value={claimInput} onChange={(e) => setClaimInput(e.target.value)} inputMode="numeric" />
@@ -761,7 +786,7 @@ export default function App() {
                       <span className={claim?.verified ? 'summary-seal verified' : 'summary-seal'}>{claim?.verified ? '✓' : '…'}</span>
                       <div><strong>{claim?.verified ? 'Verified claim' : 'Verification in progress'}</strong><p>{claim?.text ?? 'No claim loaded.'}</p></div>
                     </div>
-                    {isSample && <div className="info-callout">Public sample loaded. Create a fresh claim to enable writes.</div>}
+                    {isSample && claim && <div className="info-callout">Public sample loaded. Create a fresh claim to enable writes.</div>}
                   </article>
 
                   <article className="surface-card config-card-v4">
