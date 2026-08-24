@@ -118,3 +118,18 @@ npm test
 npm run build
 npm run dev
 ```
+
+
+## Final live-deployment fixes
+
+After switching the project to the final contract address `0x09324215eEC452600F72Eb1D63ee6Bb48E92740f`, two
+deployment-specific frontend issues were corrected:
+
+1. `src/config.ts` now validates `VITE_CONTRACT_ADDRESS` and falls back to the
+   final address when the environment value is blank or malformed.
+2. `src/App.tsx` now handles a fresh deployment with `claim_count = 0` without
+   calling `get_claim(1)`. The UI shows an empty registry and allows the first
+   claim to be created.
+
+The final live dApp subsequently created and verified Claim #1, which is now the
+read-only public sample.

@@ -1,20 +1,17 @@
 # SourceGate
 
-**Public GenLayer dApp for SourceIndependenceGate.**
+**Provenance-independence verification on GenLayer.**
 
-SourceGate lets users commit immutable source excerpts for a claim, ask GenLayer
-validators whether one source pair is genuinely independent or derivative, and
-watch the deterministic verification threshold update on-chain.
+SourceGate is a public GenLayer dApp built on the `SourceIndependenceGate`
+Intelligent Contract. Users commit immutable source excerpts for a claim,
+compare exactly one source pair per validator-consensus call, and accumulate
+deterministic verification coverage.
 
-## Deployed Intelligent Contract
+## Live project
 
-```text
-0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
-```
-
-Explorer:
-
-https://explorer-studio.genlayer.com/address/0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
+- Website: https://source-gate.vercel.app/
+- Contract: `0x09324215eEC452600F72Eb1D63ee6Bb48E92740f`
+- Explorer: https://explorer-studio.genlayer.com/address/0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
 
 Contract source SHA-256:
 
@@ -22,69 +19,123 @@ Contract source SHA-256:
 337ecb69222e61b7b693621bd7f6d2a84189ed480c6d42b9645fedd3e2273374
 ```
 
-The included file `contracts/SourceIndependenceGate.py` is the exact v1.1 source
-used for this project build.
-
-## Product flow
+The repository includes the matching source at:
 
 ```text
-Create a fresh claim
-→ register immutable source excerpts
-→ judge one source pair at a time
-→ accumulate independent-pair coverage
-→ VERIFIED after 2 positive pairs across 3 distinct sources
-→ verified claim can be reused as a typed source downstream
+contracts/SourceIndependenceGate.py
 ```
 
-## UI
+## What the contract decides
 
-V4 uses a GenLayer-Portal-inspired application shell: light fixed sidebar, compact top bar, a short dark SourceGate hero, wide dashboard cards, and denser two-column workspaces. All V2 transaction and multi-user safety fixes are preserved.
+Each judged source pair receives exactly one semantic verdict:
 
+```text
+INDEPENDENT_CORROBORATION
+DERIVATIVE_SOURCE_CLUSTER
+```
 
-### 01 · Overview
-- Claim #1 auto-loads as a read-only public sample.
-- Fresh demo claims include a unique run id to avoid shared-state collisions.
-- Current verification counters are visible immediately.
+The contract does **not** ask whether the claim is true and does not score source
+reputation. It asks whether the two committed excerpts appear to provide
+independent corroboration or likely trace back to the same informational origin.
 
-### 02 · Sources
-- Immutable source registry.
-- Add external excerpts.
-- Add a VERIFIED claim as a typed source.
-- URLs are reference metadata only.
+A claim becomes `VERIFIED` only when both deterministic conditions are met:
 
-### 03 · Pair Review
-- Judge exactly one pair per consensus transaction.
-- Show `INDEPENDENT` / `DERIVATIVE`.
-- Show pair audit history and verification-gate progress.
+```text
+independent_pairs >= 2
+distinct_independent_sources >= 3
+```
 
-## StudioNet handling
+`VERIFIED` does not mean every source is mutually independent. Unjudged pairs
+remain unknown.
 
-- same-origin `/genlayer-rpc` proxy for contract reads;
+## Deterministic teeth
+
+Verification has an on-chain consequence:
+
+- an unverified claim cannot be reused through the typed verified-claim source path;
+- exact duplicate excerpts inside one claim are rejected;
+- exact copy-paste of an unverified claim text as an external source is rejected;
+- re-judging the same pair is a deterministic no-op;
+- sources remain append-only;
+- verified claims can be reused as typed downstream sources.
+
+## URLs and external content
+
+Reference URLs are human-facing metadata only.
+
+```text
+URLs in validator prompt: NO
+Web fetching by validators: NO
+```
+
+Consensus sees the immutable claim text and two committed source excerpts.
+
+## Public dApp flow
+
+```text
+Create claim + source excerpts
+→ Pair Review
+→ judge one pair per transaction
+→ accumulate independent-pair coverage
+→ VERIFIED
+→ typed downstream reuse unlocked
+```
+
+The UI is organized as:
+
+```text
+Overview
+Sources
+Pair Review
+```
+
+Claim #1 on the final deployment is the public read-only sample.
+
+## Final live sample
+
+Observed on the final deployed contract:
+
+```text
+Claim #1
+source_count = 4
+pair_count = 3
+independent_pairs = 2
+distinct_independent_sources = 3
+verified = true
+```
+
+The live UI shows:
+
+```text
+VERIFIED
+2/2 independent pairs
+3/3 distinct sources
+4 immutable excerpts
+3 pair records
+```
+
+Claim #1 is intentionally read-only in the public frontend so community users
+cannot mutate the shared sample through normal UI actions.
+
+## Frontend reliability
+
+The frontend includes the adversarial-review fixes applied before publication:
+
+- same-origin `/genlayer-rpc` proxy for reads;
 - MetaMask for writes;
-- no browser transaction-receipt polling;
-- state-transition confirmation;
+- no browser-side transaction-receipt polling;
+- state-transition confirmation instead of receipt confirmation;
 - double-submit prevention while a write is pending;
-- optional GenLayer Snap;
-- `chainChanged` reload;
-- last real claim workspace persists in localStorage;
-- Claim #1 remains read-only in the frontend.
+- new claims are resolved by exact `claim.text + claim.author`, not by trusting the global latest id;
+- source mutations require the connected wallet to match `claim.author`;
+- pair judging remains public because the contract intentionally permits it;
+- untrusted reference links are clickable only for `http:` / `https:`;
+- source-write confirmation matches the actual resulting source record;
+- workspace persistence is namespaced by contract address;
+- empty fresh deployments are handled without incorrectly calling `get_claim(1)`;
+- an empty/invalid Vercel contract env value safely falls back to the final address.
 
-## Frontend hardening after adversarial review
-
-Project v2 applies the mandatory frontend fixes from the pre-publish review:
-
-- new claim ids are located by exact `claim.text + claim.author`, not by trusting the global `claim_count`;
-- local workspace storage is namespaced by deployed contract address;
-- source-add actions require the connected wallet to match `claim.author`;
-- public pair judging stays available by contract design, with an explicit permanence warning for non-authors;
-- untrusted `reference_url` values are rendered only when they parse as `http:` or `https:`;
-- deterministic source guards are preflighted where the public read API makes that possible;
-- source-write confirmation matches the exact resulting source record, not merely a counter increase;
-- timeout copy no longer claims that the transaction succeeded;
-- a fresh demo template is generated after successful claim creation;
-- live `get_config()` values are rendered in Overview.
-
-## Run locally
+## Local development
 
 ```bash
 npm install
@@ -95,7 +146,7 @@ npm run dev
 
 ## Vercel
 
-The included `vercel.json` rewrites:
+The included `vercel.json` proxies:
 
 ```text
 /genlayer-rpc
@@ -108,33 +159,12 @@ Optional environment variable:
 VITE_CONTRACT_ADDRESS=0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
 ```
 
-## Contract runtime already verified
-
-Claim #1:
-
-```text
-S1 + S2 -> DERIVATIVE_SOURCE_CLUSTER
-S1 + S3 -> INDEPENDENT_CORROBORATION
-S3 + S4 -> INDEPENDENT_CORROBORATION
-
-independent_pairs = 2
-distinct_independent_sources = 3
-verified = true
-```
-
-Adversarial guards already observed on StudioNet:
-
-```text
-duplicate exact excerpt -> rollback
-exact copy of unverified claim as external source -> rollback
-rejudging same pair -> deterministic no-op
-unverified typed claim reuse -> rollback
-verified typed claim reuse -> success
-```
+If that environment variable is missing, blank, or not a valid 40-byte hex
+address, `src/config.ts` falls back to the final deployment above.
 
 ## Honest scope
 
-`VERIFIED` does not prove that every source is mutually independent, that a
-committed excerpt corresponds to a real external document, or that the
-underlying claim is true. It means the deterministic verification threshold was
-reached from committed pair verdicts.
+SourceGate records and adjudicates the relationship between **committed
+excerpts**. It does not prove that a committed excerpt came from a real external
+document, that the underlying claim is true, or that sophisticated paraphrasing
+cannot evade an exact-text deterministic guard.
