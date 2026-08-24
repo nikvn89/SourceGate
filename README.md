@@ -9,12 +9,12 @@ watch the deterministic verification threshold update on-chain.
 ## Deployed Intelligent Contract
 
 ```text
-0xb5c2abA865EdfB9F25B44eaedf09BE02D32Fa49D
+0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
 ```
 
 Explorer:
 
-https://explorer-studio.genlayer.com/address/0xb5c2abA865EdfB9F25B44eaedf09BE02D32Fa49D
+https://explorer-studio.genlayer.com/address/0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
 
 Contract source SHA-256:
 
@@ -105,7 +105,7 @@ The included `vercel.json` rewrites:
 Optional environment variable:
 
 ```text
-VITE_CONTRACT_ADDRESS=0xb5c2abA865EdfB9F25B44eaedf09BE02D32Fa49D
+VITE_CONTRACT_ADDRESS=0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
 ```
 
 ## Contract runtime already verified
