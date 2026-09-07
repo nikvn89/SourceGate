@@ -16,7 +16,8 @@ import {
   CONTRACT_ADDRESS,
   DEMO_SOURCES,
   EXPLORER_BASE,
-  PUBLIC_SAMPLE_CLAIM_ID,
+  FROZEN_SOURCE_SHA256,
+  RUNTIME_EVIDENCE_ADDRESS,
 } from './config'
 import { reportError } from './errors'
 import type {
@@ -97,14 +98,13 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('overview')
   const [account, setAccount] = useState<Address | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [claimId, setClaimId] = useState(PUBLIC_SAMPLE_CLAIM_ID)
-  const [claimInput, setClaimInput] = useState(String(PUBLIC_SAMPLE_CLAIM_ID))
+  const [claimId, setClaimId] = useState(0)
+  const [claimInput, setClaimInput] = useState('')
   const [claim, setClaim] = useState<ClaimRecord | null>(null)
   const [config, setConfig] = useState<GateConfig | null>(null)
   const [sources, setSources] = useState<SourceRecord[]>([])
   const [pairs, setPairs] = useState<PairSummary[]>([])
   const [loading, setLoading] = useState(false)
-  const [isSample, setIsSample] = useState(true)
   const [error, setError] = useState('')
   const [action, setAction] = useState<ActionState>({
     phase: 'idle',
@@ -122,17 +122,14 @@ export default function App() {
   const [sourceA, setSourceA] = useState('1')
   const [sourceB, setSourceB] = useState('2')
 
-  const writesDisabled = isSample || !account
+  const writesDisabled = !account
   const isOwner =
     !!account &&
     !!claim &&
     claim.author.toLowerCase() === account.toLowerCase()
   const busy = action.phase === 'submitted'
 
-  const loadClaim = useCallback(async (
-    id: number,
-    mode: 'sample' | 'workspace' = 'workspace',
-  ) => {
+  const loadClaim = useCallback(async (id: number) => {
     setLoading(true)
     setError('')
 
@@ -148,11 +145,7 @@ export default function App() {
       setClaim(nextClaim)
       setSources(nextSources)
       setPairs([...nextPairs].reverse())
-      setIsSample(mode === 'sample')
-
-      if (mode === 'workspace') {
-        window.localStorage.setItem(LAST_CLAIM_KEY, String(id))
-      }
+      window.localStorage.setItem(LAST_CLAIM_KEY, String(id))
 
       if (nextSources.length >= 2) {
         setSourceA('1')
@@ -167,8 +160,8 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     if (!claim) return
-    await loadClaim(claimId, isSample ? 'sample' : 'workspace')
-  }, [claim, claimId, isSample, loadClaim])
+    await loadClaim(claimId)
+  }, [claim, claimId, loadClaim])
 
   useEffect(() => {
     void getConfig()
@@ -186,24 +179,15 @@ export default function App() {
       saved <= config.claim_count
 
     if (hasSavedWorkspace) {
-      void loadClaim(saved, 'workspace')
+      void loadClaim(saved)
       return
     }
 
-    if (
-      PUBLIC_SAMPLE_CLAIM_ID > 0 &&
-      PUBLIC_SAMPLE_CLAIM_ID <= config.claim_count
-    ) {
-      void loadClaim(PUBLIC_SAMPLE_CLAIM_ID, 'sample')
-      return
-    }
-
-    // Fresh deployment: no claim exists yet. Do not call get_claim(1),
-    // because the contract correctly rejects a non-existent id.
+    // No saved workspace: do not guess which public claim to open and do not
+    // call get_claim(1) on a fresh deployment where no claim exists yet.
     setClaim(null)
     setSources([])
     setPairs([])
-    setIsSample(false)
     setClaimId(0)
     setClaimInput('')
     setError('')
@@ -339,7 +323,7 @@ export default function App() {
 
       if (result.status === 'confirmed' && result.value > 0) {
         const newClaimId = result.value
-        await loadClaim(newClaimId, 'workspace')
+        await loadClaim(newClaimId)
         setConfirmed(`Claim #${newClaimId} created ✓`, hash)
         onFreshTemplate()
         setTab('review')
@@ -354,14 +338,11 @@ export default function App() {
   const onLoadClaim = async () => {
     const id = Number(claimInput)
     if (!Number.isInteger(id) || id <= 0) return setError('Enter a valid claim id.')
-    await loadClaim(id, id === PUBLIC_SAMPLE_CLAIM_ID ? 'sample' : 'workspace')
+    await loadClaim(id)
   }
 
   const onAddExternal = async () => {
     if (!account) return setError('Connect MetaMask first.')
-    if (writesDisabled) {
-      return setError('The public sample is read-only. Create or load another claim.')
-    }
     if (!claim) return
     if (!isOwner) return setError('Only the claim author may add sources.')
 
@@ -423,9 +404,6 @@ export default function App() {
 
   const onAddVerifiedClaim = async () => {
     if (!account) return setError('Connect MetaMask first.')
-    if (writesDisabled) {
-      return setError('The public sample is read-only. Create or load another claim.')
-    }
     if (!claim) return
     if (!isOwner) return setError('Only the claim author may add sources.')
 
@@ -490,9 +468,6 @@ export default function App() {
 
   const onJudgePair = async () => {
     if (!account) return setError('Connect MetaMask first.')
-    if (writesDisabled) {
-      return setError('The public sample is read-only. Create or load another claim.')
-    }
     if (!claim) return
 
     const a = Number(sourceA)
@@ -609,13 +584,13 @@ export default function App() {
 
         <div className="sidebar-claim-card">
           <div className="sidebar-claim-top">
-            <span>{!claim ? 'EMPTY REGISTRY' : isSample ? 'SAMPLE CLAIM' : account && !isOwner ? 'PUBLIC CLAIM' : 'WORKSPACE'}</span>
+            <span>{!claim ? 'EMPTY REGISTRY' : isOwner ? 'YOUR CLAIM' : 'PUBLIC CLAIM'}</span>
             <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
               {claim?.verified ? 'VERIFIED' : 'BUILDING'}
             </b>
           </div>
-          <strong>{claim ? `Claim #${claim.claim_id}` : config ? 'No claims yet' : 'Loading…'}</strong>
-          <p>{claim ? shortText(claim.text, 82) : config ? 'Connect a wallet and create the first claim.' : 'Reading contract state…'}</p>
+          <strong>{claim ? `Claim #${claim.claim_id}` : config ? (config.claim_count === 0 ? 'No claims yet' : 'No claim loaded') : 'Loading…'}</strong>
+          <p>{claim ? shortText(claim.text, 82) : config ? (config.claim_count === 0 ? 'Connect a wallet and create the first claim.' : 'Load an existing claim or create a new workspace.') : 'Reading contract state…'}</p>
           <div className="claim-progress"><div style={{ width: `${verificationPct}%` }} /></div>
           <small>
             {claim
@@ -673,13 +648,13 @@ export default function App() {
 
               <div className="hero-claim-card">
                 <div className="hero-claim-top">
-                  <span>{!claim ? 'EMPTY REGISTRY' : isSample ? 'READ-ONLY SAMPLE' : account && !isOwner ? 'PUBLIC CLAIM' : 'CURRENT CLAIM'}</span>
+                  <span>{!claim ? 'EMPTY REGISTRY' : isOwner ? 'YOUR CLAIM' : 'PUBLIC CLAIM'}</span>
                   <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
                     {claim?.verified ? 'VERIFIED' : 'BUILDING'}
                   </b>
                 </div>
-                <strong>{claim ? `Claim #${claim.claim_id}` : config ? 'No public sample yet' : 'Loading…'}</strong>
-                <p>{claim ? shortText(claim.text, 115) : config ? 'This deployment has no claims yet. Create the first workspace below.' : 'Reading contract state…'}</p>
+                <strong>{claim ? `Claim #${claim.claim_id}` : config ? (config.claim_count === 0 ? 'No claims yet' : 'No claim loaded') : 'Loading…'}</strong>
+                <p>{claim ? shortText(claim.text, 115) : config ? (config.claim_count === 0 ? 'This deployment has no claims yet. Create the first workspace below.' : 'Load an existing claim below or create a fresh workspace.') : 'Reading contract state…'}</p>
                 <div className="claim-progress light"><div style={{ width: `${verificationPct}%` }} /></div>
                 <div className="hero-claim-metrics">
                   <span><b>{claim?.independent_pairs ?? 0}/{claim?.required_pairs ?? 2}</b> pairs</span>
@@ -690,7 +665,7 @@ export default function App() {
           ) : (
             <section className="claim-strip-v4">
               <div>
-                <span className="section-eyebrow">{!claim ? 'EMPTY REGISTRY' : isSample ? 'READ-ONLY SAMPLE' : account && !isOwner ? 'PUBLIC CLAIM' : 'CURRENT CLAIM'}</span>
+                <span className="section-eyebrow">{!claim ? 'EMPTY REGISTRY' : isOwner ? 'YOUR CLAIM' : 'PUBLIC CLAIM'}</span>
                 <strong>{claim ? `Claim #${claim.claim_id}` : config ? 'No claim loaded' : 'Loading…'}</strong>
                 <p>{claim ? shortText(claim.text, 150) : config ? 'Create a claim or load an existing id.' : 'Reading contract state…'}</p>
               </div>
@@ -723,7 +698,7 @@ export default function App() {
           {tab === 'overview' && (
             <div className="page-stack">
               <section className="metric-row-v4">
-                <article className="metric-v4"><span>CLAIM</span><strong>#{claim?.claim_id ?? '—'}</strong><small>{isSample ? 'Public sample' : isOwner ? 'Your workspace' : 'Public claim'}</small></article>
+                <article className="metric-v4"><span>CLAIM</span><strong>#{claim?.claim_id ?? '—'}</strong><small>{claim ? (isOwner ? 'Your workspace' : 'Public claim') : 'No claim loaded'}</small></article>
                 <article className="metric-v4"><span>SOURCES</span><strong>{claim?.source_count ?? '—'}</strong><small>Immutable excerpts</small></article>
                 <article className="metric-v4"><span>INDEPENDENT</span><strong>{claim?.independent_pairs ?? '—'}</strong><small>Need {claim?.required_pairs ?? 2} positive pairs</small></article>
                 <article className="metric-v4"><span>DERIVATIVE</span><strong>{claim?.derivative_pairs ?? '—'}</strong><small>Shared-origin pairs</small></article>
@@ -776,7 +751,7 @@ export default function App() {
                     <div className="surface-head"><div><span className="section-eyebrow">OPEN</span><h2>Existing claim</h2></div></div>
                     <p className="surface-note">{config && config.claim_count === 0
                     ? 'No claims exist on this deployment yet. Create the first workspace.'
-                    : 'Claim #1 is the default public sample and remains read-only in this interface.'}</p>
+                    : 'Load any existing claim by id. Source additions require its author; pair judging is public.'}</p>
                     <label>CLAIM ID</label>
                     <div className="inline-control">
                       <input value={claimInput} onChange={(e) => setClaimInput(e.target.value)} inputMode="numeric" />
@@ -786,7 +761,6 @@ export default function App() {
                       <span className={claim?.verified ? 'summary-seal verified' : 'summary-seal'}>{claim?.verified ? '✓' : '…'}</span>
                       <div><strong>{claim?.verified ? 'Verified claim' : 'Verification in progress'}</strong><p>{claim?.text ?? 'No claim loaded.'}</p></div>
                     </div>
-                    {isSample && claim && <div className="info-callout">Public sample loaded. Create a fresh claim to enable writes.</div>}
                   </article>
 
                   <article className="surface-card config-card-v4">
@@ -796,6 +770,9 @@ export default function App() {
                       <div><span>URLs in prompt</span><strong>{config ? (config.urls_enter_consensus_prompt ? 'YES' : 'NO') : '—'}</strong></div>
                       <div><span>Pair judging</span><strong>{config ? (config.public_pair_judging ? 'PUBLIC' : 'RESTRICTED') : '—'}</strong></div>
                       <div><span>Global admin</span><strong>{config ? (config.global_admin ? 'YES' : 'NO') : '—'}</strong></div>
+                      <div><span>Project deployment</span><a href={`${EXPLORER_BASE}/address/${CONTRACT_ADDRESS}`} target="_blank" rel="noreferrer"><strong>{shortAddress(CONTRACT_ADDRESS)} ↗</strong></a></div>
+                      <div><span>Runtime evidence</span><a href={`${EXPLORER_BASE}/address/${RUNTIME_EVIDENCE_ADDRESS}`} target="_blank" rel="noreferrer"><strong>{shortAddress(RUNTIME_EVIDENCE_ADDRESS)} ↗</strong></a></div>
+                      <div><span>Frozen source</span><strong title={FROZEN_SOURCE_SHA256}>{FROZEN_SOURCE_SHA256.slice(0, 10)}…{FROZEN_SOURCE_SHA256.slice(-8)}</strong></div>
                     </div>
                   </article>
                 </div>
@@ -841,7 +818,7 @@ export default function App() {
                 </article>
 
                 <div className="sources-actions-v4">
-                  {!isSample && account && !isOwner && claim && (
+                  {account && !isOwner && claim && (
                     <div className="warning-callout">This claim belongs to {shortAddress(claim.author)}. Only its author can add sources.</div>
                   )}
 
@@ -875,7 +852,7 @@ export default function App() {
 
               <section className="review-layout-v4">
                 <article className="surface-card judge-panel-v4">
-                  {!isSample && account && !isOwner && claim && (
+                  {account && !isOwner && claim && (
                     <div className="warning-callout">Public claim owned by {shortAddress(claim.author)}. Pair judging is intentionally public; the verdict is permanent and this pair cannot be judged again.</div>
                   )}
 
@@ -890,8 +867,8 @@ export default function App() {
                     <div><span>S{sourceB}</span><p>{sourceByIndex.get(Number(sourceB))?.excerpt ?? 'Choose a source.'}</p></div>
                   </div>
 
-                  <button className="primary-action" onClick={onJudgePair} disabled={writesDisabled || busy || sources.length < 2}>{isSample ? 'Public sample is read-only' : 'Judge Pair with Consensus'}</button>
-                  {!isSample && sources.length >= 4 && pairs.length === 0 && (
+                  <button className="primary-action" onClick={onJudgePair} disabled={writesDisabled || busy || sources.length < 2}>Judge Pair with Consensus</button>
+                  {sources.length >= 4 && pairs.length === 0 && (
                     <div className="demo-path-v4"><strong>Suggested demo</strong><span>S1 + S2 → likely derivative</span><span>S1 + S3 → independent candidate</span><span>S3 + S4 → independent candidate</span></div>
                   )}
                 </article>

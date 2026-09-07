@@ -1,16 +1,13 @@
-const FALLBACK_CONTRACT_ADDRESS =
-  '0x09324215eEC452600F72Eb1D63ee6Bb48E92740f' as const
-
-const envAddress = (import.meta.env.VITE_CONTRACT_ADDRESS ?? '').trim()
-
 export const CONTRACT_ADDRESS =
-  /^0x[a-fA-F0-9]{40}$/.test(envAddress)
-    ? (envAddress as `0x${string}`)
-    : FALLBACK_CONTRACT_ADDRESS
+  '0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a' as const
+
+export const RUNTIME_EVIDENCE_ADDRESS =
+  '0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b' as const
+
+export const FROZEN_SOURCE_SHA256 =
+  'ead0b54660d1ba82b3ffd6cf02a54da5ce89d898226da1b8b30cb2f60429208f' as const
 
 export const EXPLORER_BASE = 'https://explorer-studio.genlayer.com'
-
-export const PUBLIC_SAMPLE_CLAIM_ID = 1
 
 export const DEMO_SOURCES = [
   {

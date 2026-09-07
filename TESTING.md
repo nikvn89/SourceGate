@@ -1,132 +1,307 @@
-# SourceGate — Final Testing
+# SourceGate — Runtime and Release Testing
 
-## Final deployment
+## Frozen release identity
 
 ```text
-Contract: 0x09324215eEC452600F72Eb1D63ee6Bb48E92740f
-Website:  https://source-gate.vercel.app/
+Project: SourceGate
+Intelligent Contract implementation: SourceIndependenceGate
+Public contract filename: contracts/SourceGate.py
+Frozen SHA256: ead0b54660d1ba82b3ffd6cf02a54da5ce89d898226da1b8b30cb2f60429208f
 ```
 
-## Final live dApp run
-
-The final deployment initially had an empty registry. The live frontend was
-verified to handle this state correctly:
+Clean project deployment:
 
 ```text
-EMPTY REGISTRY
-No public sample yet
-claim_count = 0
+0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a
 ```
 
-The frontend did not call a non-existent Claim #1 and did not surface the prior
-`-32000` RPC error.
-
-A first claim was then created from the live dApp using the four-source Harbor
-Rail demo.
-
-Observed final state:
+Runtime evidence deployment:
 
 ```text
-claim_id = 1
-source_count = 4
+0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b
+```
+
+The clean deployment and runtime-evidence deployment are intentionally separate.
+Do not reproduce runtime tests on the clean project address.
+
+## Runtime profile
+
+`get_config()` on the runtime deployment returned the frozen R2 profile,
+including:
+
+```text
+name = SourceIndependenceGate
+version = 1.2
+required_independent_pairs = 2
+required_distinct_independent_sources = 3
+public_pair_judging = true
+sources_append_only_after_verification = true
+urls_enter_consensus_prompt = false
+global_admin = false
+clock_used = false
+```
+
+## Reproducible runtime sequence
+
+### 1. Create Claim #1 with three sources
+
+Claim:
+
+```text
+Factory Y stopped production line 3 in June.
+```
+
+Sources:
+
+```text
+S1  Factory notice: production line 3 was suspended beginning June 2.
+S2  Report citing that factory notice: line 3 stopped operating in early June.
+S3  Safety-inspection record: line 3 did not receive operational clearance during the June inspection cycle.
+```
+
+Baseline post-state:
+
+```text
+source_count = 3
+pair_count = 0
+independent_pairs = 0
+derivative_pairs = 0
+verified = false
+```
+
+### 2. Semantic verdict paths
+
+Judge `S1 + S2`:
+
+```text
+DERIVATIVE_SOURCE_CLUSTER
+```
+
+Post-state:
+
+```text
+pair_count = 1
+derivative_pairs = 1
+independent_pairs = 0
+verified = false
+```
+
+Judge `S1 + S3`:
+
+```text
+INDEPENDENT_CORROBORATION
+```
+
+Post-state includes:
+
+```text
+pair_count = 2
+independent_pairs = 1
+verified = false
+```
+
+Judge the same `S1 + S3` pair again. The pair is not semantically rerolled and
+aggregate counters do not increase.
+
+Judge `S2 + S3`. The resulting positive coverage reaches the deterministic
+threshold:
+
+```text
 pair_count = 3
 independent_pairs = 2
+derivative_pairs = 1
 distinct_independent_sources = 3
 verified = true
 ```
 
-Observed verification gate:
+### 3. Unverified typed-reuse consequence
+
+Create Claim #2, left unverified:
 
 ```text
-2/2 independent pairs
-3/3 distinct sources
-VERIFIED
+Warehouse Z changed its overnight access procedure in July.
 ```
 
-Observed public-sample behavior:
+Create Claim #3 as a downstream target. Its baseline was:
 
 ```text
-READ-ONLY SAMPLE · Claim #1
-Sources = 4
-Pair Review = 3
-VERIFIED
+source_count = 1
+verified = false
 ```
 
-On the Sources screen, normal write controls for the shared sample are disabled.
-Claim #1 is therefore preserved as the final public demo state.
-
-## Demo pair path
-
-The intended three-call demo path is:
+Call:
 
 ```text
-S1 + S2 → derivative candidate
-S1 + S3 → independent candidate
-S3 + S4 → independent candidate
+add_verified_claim_source(3, 2)
 ```
 
-The final aggregate state confirms:
+Observed execution:
 
 ```text
-2 independent pair verdicts
-1 derivative pair verdict
-3 distinct sources participating in positive pair verdicts
-3 total pair records
+Consensus status: ACCEPTED
+Execution result: ERROR
+Rollback reason: Source claim must be VERIFIED before reuse
 ```
 
-The exact pair-to-verdict mapping should be taken from the live Pair Review audit
-trail when documenting screenshots; this file does not claim more than the
-observed final state above.
-
-## Frontend checks already verified during V5 testing
-
-Before the final contract-address switch, the same V5 frontend logic was tested
-end-to-end and observed to:
+Postcondition:
 
 ```text
-PASS  create a fresh workspace and resolve the correct claim
-PASS  update pair history after consensus finalization
-PASS  reach VERIFIED at 2 pairs / 3 distinct sources
-PASS  preserve the active workspace across F5
-PASS  recover ownership after reconnecting the author wallet
-PASS  keep the public sample read-only
-PASS  reject an exact duplicate source excerpt before opening MetaMask
+get_claim(3).source_count = 1
 ```
 
-These checks exercise frontend logic that is unchanged in the final live build.
+This is explicit evidence that accepted/finalized consensus is not interpreted
+as successful execution.
 
-## Final-address fixes verified
+### 4. Exact-copy unverified bypass
+
+Attempt to add the exact Claim #2 text to Claim #3 through
+`add_external_source`.
+
+Observed execution:
 
 ```text
-PASS  contract address displays as 0x0932...740f
-PASS  blank/invalid Vercel env no longer produces an empty address
-PASS  empty deployment no longer calls get_claim(1)
-PASS  live config loads from the final contract
-PASS  first live claim becomes Claim #1
-PASS  Claim #1 becomes the final read-only sample
+Consensus status: ACCEPTED
+Execution result: ERROR
+Rollback reason: Source text matches an unverified claim; verify it first
 ```
 
-## Runtime configuration visible in the dApp
+Postcondition:
 
 ```text
-version = 1.1
-verification threshold = 2 pairs / 3 sources
-URLs in prompt = NO
-pair judging = PUBLIC
-global admin = NO
+get_claim(3).source_count = 1
 ```
 
-## Remaining optional checks
+### 5. Verified typed reuse and lineage
 
-These are not required for the core submission flow, but can be repeated if
-desired:
+Call:
 
 ```text
-- typed reuse of VERIFIED Claim #1 into a separate authored claim
-- typed reuse rejection for an unverified claim
-- non-http(s) reference URL rejection
-- two-browser concurrent create_claim attribution test
+add_verified_claim_source(3, 1)
 ```
 
-Avoid modifying Claim #1 simply to add more test evidence; it is now the clean
-public sample.
+Post-state:
+
+```text
+get_claim(3).source_count = 2
+```
+
+`get_source(3, 2)` returned a source whose committed excerpt equals Claim #1 text
+and whose provenance field is:
+
+```text
+from_claim_id = 1
+origin_label = Verified claim #1
+```
+
+### 6. Prompt-injection containment and permanent pair record
+
+Create Claim #4 with two excerpts, one containing an instruction-like string
+asking the model to ignore prior instructions and return non-JSON output.
+
+Call:
+
+```text
+judge_pair(4, 1, 2)
+```
+
+Observed transaction:
+
+```text
+Result = SUCCESS
+Structured verdict = INDEPENDENT_CORROBORATION
+```
+
+The injected text did not replace the required semantic output shape.
+
+Post-state:
+
+```text
+source_count = 2
+pair_count = 1
+independent_pairs = 1
+derivative_pairs = 0
+distinct_independent_sources = 2
+verified = false
+```
+
+Replaying `judge_pair(4, 1, 2)` did not create another pair or increment counters.
+Calling the reverse order `judge_pair(4, 2, 1)` resolved to the same permanent
+pair record and verdict.
+
+### 7. One-way VERIFIED latch
+
+After Claim #1 had already become `VERIFIED`, append a fourth source and judge a
+new derivative pair.
+
+Observed final Claim #1 state:
+
+```text
+source_count = 4
+pair_count = 4
+independent_pairs = 2
+derivative_pairs = 2
+distinct_independent_sources = 3
+verified = true
+```
+
+The later derivative evidence does not revert the already reached deterministic
+VERIFIED latch.
+
+## Failure-path scope
+
+The frozen source validates the semantic response shape and allowed verdict enum
+before pair/cache/counter writes. Provider exceptions and non-convergence do not
+become semantic success. The production runtime sequence above did **not** force
+an artificial provider outage or malformed provider response, so this document
+does not label those cases as runtime-triggered evidence.
+
+## Clean project deployment check
+
+On the clean project address, verify only read state:
+
+```text
+get_config() matches version 1.2 profile
+claim_count = 0
+```
+
+Do not create claims or judge pairs on the clean address solely for testing; its
+purpose is to remain the public project baseline.
+
+## Frontend release checks
+
+The final frontend revision is designed around these acceptance conditions:
+
+```text
+frontend source is pinned to the clean project address
+there is no hard-coded read-only Claim #1 sample
+fresh claim creation confirms exact text + author post-state
+source writes confirm exact resulting source records
+pair judgment confirms get_pair_by_sources(...).judged
+UI does not equate submitted/finalized status with execution success
+runtime-evidence and frozen-source identifiers are visible in the live config panel
+```
+
+Release commands:
+
+```bash
+npm ci
+npm test
+npm run build
+```
+
+After Vercel deployment, smoke-test:
+
+```text
+https://source-gate.vercel.app/
+```
+
+Expected public state before any real user writes:
+
+```text
+clean project address = 0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a
+claim_count = 0
+no attempt to call get_claim(1)
+first real Claim #1 remains writable by its author
+runtime evidence link = 0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b
+frozen SHA = ead0b54660d1ba82b3ffd6cf02a54da5ce89d898226da1b8b30cb2f60429208f
+```
