@@ -14,7 +14,6 @@ import {
 } from './genlayer'
 import {
   CONTRACT_ADDRESS,
-  DEMO_SOURCES,
   EXPLORER_BASE,
   FROZEN_SOURCE_SHA256,
   RUNTIME_EVIDENCE_ADDRESS,
@@ -47,16 +46,6 @@ const shortAddress = (address: string) =>
 const shortText = (text: string, size = 90) =>
   text.length > size ? `${text.slice(0, size)}…` : text
 
-function randomDemoId() {
-  const random = new Uint32Array(1)
-  crypto.getRandomValues(random)
-  return `${Date.now().toString(36).slice(-7)}-${random[0].toString(36).slice(-5)}`
-}
-
-function freshDemoClaim() {
-  return `Demo ${randomDemoId()}: Harbor Rail cancelled about two dozen weekend services during May.`
-}
-
 function safeHttpUrl(raw: string): string | null {
   const value = raw.trim()
   if (!value) return null
@@ -71,9 +60,10 @@ function safeHttpUrl(raw: string): string | null {
   }
 }
 
-function freshDraftSources(): DraftSource[] {
-  return DEMO_SOURCES.map((source) => ({
-    ...source,
+function emptyDraftSources(): DraftSource[] {
+  return Array.from({ length: 4 }, () => ({
+    excerpt: '',
+    origin_label: '',
     reference_url: '',
   }))
 }
@@ -111,8 +101,8 @@ export default function App() {
     label: 'Ready',
   })
 
-  const [draftClaim, setDraftClaim] = useState(freshDemoClaim)
-  const [draftSources, setDraftSources] = useState<DraftSource[]>(freshDraftSources)
+  const [draftClaim, setDraftClaim] = useState('')
+  const [draftSources, setDraftSources] = useState<DraftSource[]>(emptyDraftSources)
 
   const [newExcerpt, setNewExcerpt] = useState('')
   const [newOrigin, setNewOrigin] = useState('')
@@ -250,9 +240,9 @@ export default function App() {
     setAction({ phase: 'error', label: 'Action failed', message })
   }
 
-  const onFreshTemplate = () => {
-    setDraftClaim(freshDemoClaim())
-    setDraftSources(freshDraftSources())
+  const clearDraft = () => {
+    setDraftClaim('')
+    setDraftSources(emptyDraftSources())
   }
 
   const onCreateClaim = async () => {
@@ -325,7 +315,7 @@ export default function App() {
         const newClaimId = result.value
         await loadClaim(newClaimId)
         setConfirmed(`Claim #${newClaimId} created ✓`, hash)
-        onFreshTemplate()
+        clearDraft()
         setTab('review')
       } else {
         setPending('Claim sent — could not confirm your claim id yet', hash)
@@ -707,18 +697,22 @@ export default function App() {
               <section className="overview-workspace-grid">
                 <article className="surface-card create-card-v4">
                   <div className="surface-head">
-                    <div><span className="section-eyebrow">CREATE</span><h2>Fresh claim workspace</h2></div>
-                    <button className="soft-button" onClick={onFreshTemplate}>New demo</button>
+                    <div><span className="section-eyebrow">CREATE</span><h2>New claim</h2></div>
                   </div>
-                  <p className="surface-note">Preset sources are designed to give one likely derivative pair and two independent candidates.</p>
+                  <p className="surface-note">Enter a claim and the source excerpts you want to register on-chain.</p>
 
                   <label>CLAIM TEXT</label>
-                  <textarea value={draftClaim} onChange={(e) => setDraftClaim(e.target.value)} rows={2} />
+                  <textarea
+                    value={draftClaim}
+                    onChange={(e) => setDraftClaim(e.target.value)}
+                    rows={2}
+                    placeholder="Enter claim text"
+                  />
 
                   <div className="draft-grid-v4">
                     {draftSources.map((source, index) => (
                       <div className="draft-mini-card" key={index}>
-                        <div className="draft-mini-head"><span>S{index + 1}</span><strong>{index === 1 ? 'Likely derivative' : index > 1 ? 'Independent candidate' : 'Origin source'}</strong></div>
+                        <div className="draft-mini-head"><span>S{index + 1}</span><strong>Source {index + 1}</strong></div>
                         <textarea
                           value={source.excerpt}
                           onChange={(e) => {
@@ -727,6 +721,7 @@ export default function App() {
                             setDraftSources(next)
                           }}
                           rows={3}
+                          placeholder="Paste source excerpt"
                         />
                         <input
                           value={source.origin_label}
@@ -759,7 +754,10 @@ export default function App() {
                     </div>
                     <div className="claim-summary-v4">
                       <span className={claim?.verified ? 'summary-seal verified' : 'summary-seal'}>{claim?.verified ? '✓' : '…'}</span>
-                      <div><strong>{claim?.verified ? 'Verified claim' : 'Verification in progress'}</strong><p>{claim?.text ?? 'No claim loaded.'}</p></div>
+                      <div>
+                        <strong>{claim ? (claim.verified ? 'Verified claim' : 'Verification in progress') : 'Waiting for claim'}</strong>
+                        <p>{claim?.text ?? 'Create or load a claim to begin.'}</p>
+                      </div>
                     </div>
                   </article>
 
@@ -868,9 +866,6 @@ export default function App() {
                   </div>
 
                   <button className="primary-action" onClick={onJudgePair} disabled={writesDisabled || busy || sources.length < 2}>Judge Pair with Consensus</button>
-                  {sources.length >= 4 && pairs.length === 0 && (
-                    <div className="demo-path-v4"><strong>Suggested demo</strong><span>S1 + S2 → likely derivative</span><span>S1 + S3 → independent candidate</span><span>S3 + S4 → independent candidate</span></div>
-                  )}
                 </article>
 
                 <article className="surface-card gate-card-v4">
