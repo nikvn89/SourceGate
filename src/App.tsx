@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   addExternalSource,
-  addVerifiedClaimSource,
+  addReuseClaimSource,
+  attestSource,
   connectWallet,
   createClaim,
+  freezeReuseBasis,
   getClaim,
   getClaimPairs,
   getConfig,
   getPairBySources,
+  getReuseBasis,
   getSources,
   judgePair,
+  revokeSource,
   waitForStateChange,
 } from './genlayer'
 import {
@@ -25,182 +29,140 @@ import type {
   DraftSource,
   GateConfig,
   PairSummary,
+  ReuseBasis,
   SourceRecord,
 } from './types'
 
-type Tab = 'overview' | 'sources' | 'review'
+type Tab = 'overview' | 'provenance' | 'matrix'
 type ActionPhase = 'idle' | 'submitted' | 'confirmed' | 'pending' | 'error'
+type ActionState = { phase: ActionPhase; label: string; hash?: string; message?: string }
 
-type ActionState = {
-  phase: ActionPhase
-  label: string
-  hash?: string
-  message?: string
-}
+const LAST_CLAIM_KEY = `sourcegate:v2:last-claim:${CONTRACT_ADDRESS.toLowerCase()}`
+const ZERO64 = '0'.repeat(64)
 
-const LAST_CLAIM_KEY = `sourcegate:last-claim:${CONTRACT_ADDRESS.toLowerCase()}`
-
-const shortAddress = (address: string) =>
-  address ? `${address.slice(0, 6)}…${address.slice(-4)}` : '—'
-
-const shortText = (text: string, size = 90) =>
-  text.length > size ? `${text.slice(0, size)}…` : text
+const shortAddress = (value: string) => value ? `${value.slice(0, 6)}…${value.slice(-4)}` : '—'
+const shortHash = (value: string) => value ? `${value.slice(0, 10)}…${value.slice(-8)}` : '—'
+const pairKey = (a: number, b: number) => `${Math.min(a, b)}:${Math.max(a, b)}`
+const cleanHex64 = (value: string) => value.trim().toLowerCase().replace(/^0x/, '')
+const validDigest = (value: string) => /^[0-9a-f]{64}$/.test(cleanHex64(value)) && cleanHex64(value) !== ZERO64
+const validAddress = (value: string) => /^0x[0-9a-fA-F]{40}$/.test(value.trim())
 
 function safeHttpUrl(raw: string): string | null {
-  const value = raw.trim()
-  if (!value) return null
-
+  if (!raw.trim()) return null
   try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:'
-      ? url.toString()
-      : null
+    const url = new URL(raw.trim())
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null
   } catch {
     return null
   }
 }
 
-function emptyDraftSources(): DraftSource[] {
-  return Array.from({ length: 4 }, () => ({
-    excerpt: '',
-    origin_label: '',
-    reference_url: '',
-  }))
+function draftSources(): DraftSource[] {
+  return Array.from({ length: 3 }, () => ({ excerpt: '', origin_label: '', reference_url: '', evidence_digest: '' }))
 }
 
 function SourceGateLogo() {
   return <img className="project-logo" src="/sourcegate-logo.svg" alt="SourceGate" />
 }
 
-function GenLayerBadge() {
-  return (
-    <div className="genlayer-badge">
-      <img src="/genlayer-logo.png" alt="GenLayer" />
-      <div>
-        <strong>Built on GenLayer</strong>
-        <span>AI consensus for provenance independence</span>
-      </div>
-    </div>
-  )
+function statusClass(source: SourceRecord) {
+  if (source.provenance_state === 'ATTESTED') return 'status-pill verified'
+  if (source.provenance_state === 'REVOKED') return 'status-pill revoked'
+  return 'status-pill building'
 }
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('overview')
   const [account, setAccount] = useState<Address | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [claimId, setClaimId] = useState(0)
-  const [claimInput, setClaimInput] = useState('')
-  const [claim, setClaim] = useState<ClaimRecord | null>(null)
   const [config, setConfig] = useState<GateConfig | null>(null)
+  const [claim, setClaim] = useState<ClaimRecord | null>(null)
+  const [basis, setBasis] = useState<ReuseBasis | null>(null)
   const [sources, setSources] = useState<SourceRecord[]>([])
   const [pairs, setPairs] = useState<PairSummary[]>([])
+  const [claimInput, setClaimInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [action, setAction] = useState<ActionState>({
-    phase: 'idle',
-    label: 'Ready',
-  })
+  const [action, setAction] = useState<ActionState>({ phase: 'idle', label: 'Ready' })
 
   const [draftClaim, setDraftClaim] = useState('')
-  const [draftSources, setDraftSources] = useState<DraftSource[]>(emptyDraftSources)
+  const [draftReviewer, setDraftReviewer] = useState('')
+  const [drafts, setDrafts] = useState<DraftSource[]>(draftSources)
 
   const [newExcerpt, setNewExcerpt] = useState('')
   const [newOrigin, setNewOrigin] = useState('')
   const [newUrl, setNewUrl] = useState('')
+  const [newDigest, setNewDigest] = useState('')
   const [fromClaimId, setFromClaimId] = useState('')
 
-  const [sourceA, setSourceA] = useState('1')
-  const [sourceB, setSourceB] = useState('2')
-
-  const writesDisabled = !account
-  const isOwner =
-    !!account &&
-    !!claim &&
-    claim.author.toLowerCase() === account.toLowerCase()
   const busy = action.phase === 'submitted'
+  const isAuthor = !!account && !!claim && account.toLowerCase() === claim.author.toLowerCase()
+  const isReviewer = !!account && !!claim && account.toLowerCase() === claim.reviewer.toLowerCase()
+  const role = isAuthor ? 'AUTHOR' : isReviewer ? 'REVIEWER' : account ? 'PUBLIC' : 'DISCONNECTED'
 
-  const loadClaim = useCallback(async (id: number) => {
+  const refreshClaim = useCallback(async (id: number) => {
     setLoading(true)
     setError('')
-
     try {
-      const [nextClaim, nextSources, nextPairs] = await Promise.all([
+      const maxSources = config?.max_source_records_per_claim ?? 12
+      const [nextClaim, nextBasis, nextSources, nextPairs] = await Promise.all([
         getClaim(id),
-        getSources(id, 1, config?.max_sources_per_claim ?? 8),
+        getReuseBasis(id),
+        getSources(id, 1, maxSources),
         getClaimPairs(id, 1, 50),
       ])
-
-      setClaimId(id)
-      setClaimInput(String(id))
       setClaim(nextClaim)
+      setBasis(nextBasis)
       setSources(nextSources)
       setPairs([...nextPairs].reverse())
+      setClaimInput(String(id))
       window.localStorage.setItem(LAST_CLAIM_KEY, String(id))
-
-      if (nextSources.length >= 2) {
-        setSourceA('1')
-        setSourceB('2')
-      }
     } catch (raw) {
       setError(reportError('load claim', raw))
     } finally {
       setLoading(false)
     }
-  }, [config?.max_sources_per_claim])
+  }, [config?.max_source_records_per_claim])
 
-  const refresh = useCallback(async () => {
-    if (!claim) return
-    await loadClaim(claimId)
-  }, [claim, claimId, loadClaim])
-
-  useEffect(() => {
-    void getConfig()
-      .then(setConfig)
-      .catch((raw) => setError(reportError('load contract config', raw)))
+  const refreshConfig = useCallback(async () => {
+    const next = await getConfig()
+    setConfig(next)
+    return next
   }, [])
 
   useEffect(() => {
+    void refreshConfig().catch((raw) => setError(reportError('load contract config', raw)))
+  }, [refreshConfig])
+
+  useEffect(() => {
     if (!config) return
-
     const saved = Number(window.localStorage.getItem(LAST_CLAIM_KEY) ?? '0')
-    const hasSavedWorkspace =
-      Number.isInteger(saved) &&
-      saved > 0 &&
-      saved <= config.claim_count
-
-    if (hasSavedWorkspace) {
-      void loadClaim(saved)
-      return
-    }
-
-    // No saved workspace: do not guess which public claim to open and do not
-    // call get_claim(1) on a fresh deployment where no claim exists yet.
-    setClaim(null)
-    setSources([])
-    setPairs([])
-    setClaimId(0)
-    setClaimInput('')
-    setError('')
-    setLoading(false)
-  }, [config, loadClaim])
+    if (Number.isInteger(saved) && saved > 0 && saved <= config.claim_count) void refreshClaim(saved)
+  }, [config, refreshClaim])
 
   useEffect(() => {
     if (!window.ethereum) return
-
-    const onAccounts = (accounts: string[]) => {
-      const next = accounts?.[0]
-      setAccount(next ? (next as Address) : null)
-    }
+    const onAccounts = (accounts: string[]) => setAccount(accounts?.[0] ? accounts[0] as Address : null)
     const onChain = () => window.location.reload()
-
     window.ethereum.on?.('accountsChanged', onAccounts)
     window.ethereum.on?.('chainChanged', onChain)
-
     return () => {
       window.ethereum.removeListener?.('accountsChanged', onAccounts)
       window.ethereum.removeListener?.('chainChanged', onChain)
     }
   }, [])
+
+  const pairMap = useMemo(() => new Map(pairs.map((pair) => [pairKey(pair.source_a, pair.source_b), pair])), [pairs])
+  const activePairs = useMemo(() => {
+    const active = sources.filter((source) => source.active)
+    const result: Array<{ a: SourceRecord; b: SourceRecord; pair?: PairSummary }> = []
+    for (let i = 0; i < active.length; i += 1) {
+      for (let j = i + 1; j < active.length; j += 1) {
+        result.push({ a: active[i], b: active[j], pair: pairMap.get(pairKey(active[i].source_index, active[j].source_index)) })
+      }
+    }
+    return result
+  }, [sources, pairMap])
 
   const onConnect = async () => {
     setConnecting(true)
@@ -216,692 +178,267 @@ export default function App() {
     }
   }
 
-  const setSubmitted = (label: string, hash: string) => {
-    setAction({ phase: 'submitted', label, hash })
-  }
-
-  const setConfirmed = (label: string, hash?: string) => {
-    setAction({ phase: 'confirmed', label, hash })
-  }
-
-  const setPending = (label: string, hash: string) => {
-    setAction({
-      phase: 'pending',
-      label,
-      hash,
-      message:
-        'Transaction was sent, but the state change could not be confirmed before timeout. It may still be finalizing, or the contract may have rejected it. Open View tx before submitting again.',
-    })
-  }
-
-  const failAction = (context: string, raw: unknown) => {
+  const submitted = (label: string, hash: string) => setAction({ phase: 'submitted', label, hash })
+  const confirmed = (label: string, hash?: string) => setAction({ phase: 'confirmed', label, hash })
+  const pending = (label: string, hash: string) => setAction({
+    phase: 'pending',
+    label,
+    hash,
+    message: 'Transaction was submitted, but the required postcondition was not observed before timeout. Inspect the transaction before retrying.',
+  })
+  const fail = (context: string, raw: unknown) => {
     const message = reportError(context, raw)
     setError(message)
     setAction({ phase: 'error', label: 'Action failed', message })
   }
 
-  const clearDraft = () => {
-    setDraftClaim('')
-    setDraftSources(emptyDraftSources())
+  const onLoadClaim = async () => {
+    const id = Number(claimInput)
+    if (!Number.isInteger(id) || id <= 0) return setError('Enter a valid claim id.')
+    await refreshClaim(id)
   }
 
   const onCreateClaim = async () => {
     if (!account) return setError('Connect MetaMask first.')
-    const submittedText = draftClaim.trim()
-    if (!submittedText) return setError('Claim text is required.')
+    const text = draftClaim.trim()
+    const reviewer = draftReviewer.trim()
+    if (!text) return setError('Claim text is required.')
+    if (!validAddress(reviewer)) return setError('Reviewer must be a valid 0x address.')
+    if (reviewer.toLowerCase() === account.toLowerCase()) return setError('Reviewer must be a different wallet.')
 
-    const usableSources = draftSources.filter((source) => source.excerpt.trim())
-    if (usableSources.length < 2) return setError('Add at least two source excerpts.')
-    if (usableSources.length > (config?.max_sources_per_claim ?? 8)) {
-      return setError(`A claim can contain at most ${config?.max_sources_per_claim ?? 8} sources.`)
-    }
-
-    const normalizedExcerpts = usableSources.map((source) => source.excerpt.trim())
-    if (new Set(normalizedExcerpts).size !== normalizedExcerpts.length) {
-      return setError('Duplicate source excerpt in the claim draft.')
+    const usable = drafts.filter((item) => item.excerpt.trim())
+    if (usable.length === 0) return setError('Add at least one source bundle.')
+    if (usable.some((item) => !validDigest(item.evidence_digest))) {
+      return setError('Every external source needs a non-zero 32-byte SHA-256 evidence digest.')
     }
 
     setError('')
-
     try {
-      const before = await getConfig()
-      const payload = usableSources.map((source) => ({
-        excerpt: source.excerpt.trim(),
-        origin_label: source.origin_label.trim() || 'Source',
-        reference_url: source.reference_url.trim(),
+      const before = await refreshConfig()
+      const payload = usable.map((item) => ({
+        excerpt: item.excerpt.trim(),
+        origin_label: item.origin_label.trim() || 'Source',
+        reference_url: item.reference_url.trim(),
+        evidence_digest: cleanHex64(item.evidence_digest),
         from_claim_id: 0,
       }))
-
-      const { hash } = await createClaim(
-        account,
-        submittedText,
-        JSON.stringify(payload),
-      )
-
-      setSubmitted('Claim submitted — locating your claim id…', hash)
-
-      let nextScanId = before.claim_count + 1
+      const { hash } = await createClaim(account, text, reviewer, JSON.stringify(payload))
+      submitted('Claim submitted — verifying on-chain state…', hash)
 
       const result = await waitForStateChange<number>({
         read: async () => {
-          const cfg = await getConfig()
-          setConfig(cfg)
-
-          if (nextScanId > cfg.claim_count) return 0
-
-          const upper = Math.min(cfg.claim_count, nextScanId + 24)
-          for (let id = nextScanId; id <= upper; id += 1) {
+          const cfg = await refreshConfig()
+          for (let id = before.claim_count + 1; id <= cfg.claim_count; id += 1) {
             try {
               const candidate = await getClaim(id)
               if (
-                candidate.text === submittedText &&
-                candidate.author.toLowerCase() === account.toLowerCase()
-              ) {
-                return id
-              }
-            } catch {
-              // A newly counted id can be temporarily unreadable while finalizing.
-            }
+                candidate.text === text &&
+                candidate.author.toLowerCase() === account.toLowerCase() &&
+                candidate.reviewer.toLowerCase() === reviewer.toLowerCase()
+              ) return id
+            } catch { /* finalization lag */ }
           }
-
-          nextScanId = upper + 1
           return 0
         },
         isDone: (id) => id > 0,
-        timeoutMs: 150_000,
       })
 
       if (result.status === 'confirmed' && result.value > 0) {
-        const newClaimId = result.value
-        await loadClaim(newClaimId)
-        setConfirmed(`Claim #${newClaimId} created ✓`, hash)
-        clearDraft()
-        setTab('review')
-      } else {
-        setPending('Claim sent — could not confirm your claim id yet', hash)
-      }
-    } catch (raw) {
-      failAction('create claim', raw)
-    }
-  }
-
-  const onLoadClaim = async () => {
-    const id = Number(claimInput)
-    if (!Number.isInteger(id) || id <= 0) return setError('Enter a valid claim id.')
-    await loadClaim(id)
+        await refreshClaim(result.value)
+        confirmed(`Claim #${result.value} created ✓`, hash)
+        setDraftClaim('')
+        setDraftReviewer('')
+        setDrafts(draftSources())
+        setTab('provenance')
+      } else pending('Claim sent — creation postcondition not yet confirmed', hash)
+    } catch (raw) { fail('create claim', raw) }
   }
 
   const onAddExternal = async () => {
-    if (!account) return setError('Connect MetaMask first.')
-    if (!claim) return
-    if (!isOwner) return setError('Only the claim author may add sources.')
-
-    const excerpt = newExcerpt.trim()
-    const origin = (newOrigin || 'External source').trim()
-    const referenceUrl = newUrl.trim()
-
-    if (!excerpt) return setError('Source excerpt is required.')
-    if (sources.some((source) => source.excerpt === excerpt)) {
-      return setError('This exact source excerpt is already registered in the claim.')
-    }
-    if (claim.source_count >= (config?.max_sources_per_claim ?? 8)) {
-      return setError(`This claim has reached the ${config?.max_sources_per_claim ?? 8}-source limit.`)
-    }
-    if (referenceUrl && !safeHttpUrl(referenceUrl)) {
-      return setError('Reference URL must use http:// or https://.')
-    }
-
-    setError('')
+    if (!account || !claim || !isAuthor) return setError('Only the claim author can add sources.')
+    if (!newExcerpt.trim()) return setError('Excerpt is required.')
+    if (!validDigest(newDigest)) return setError('Evidence digest must be a non-zero 32-byte SHA-256 hex value.')
     try {
-      const { hash } = await addExternalSource(
-        account,
-        claim.claim_id,
-        excerpt,
-        origin,
-        referenceUrl,
-      )
-
-      setSubmitted('Source submitted — confirming the exact excerpt…', hash)
-
-      const result = await waitForStateChange({
-        read: () => getSources(
-          claim.claim_id,
-          1,
-          config?.max_sources_per_claim ?? 8,
-        ),
-        isDone: (value) =>
-          value.some(
-            (source) =>
-              source.excerpt === excerpt &&
-              source.origin_label === origin &&
-              source.from_claim_id === 0,
-          ),
+      const before = claim.source_count
+      const { hash } = await addExternalSource(account, claim.claim_id, newExcerpt.trim(), newOrigin.trim() || 'Source', newUrl.trim(), cleanHex64(newDigest))
+      submitted('External source submitted — verifying source count…', hash)
+      const result = await waitForStateChange<ClaimRecord>({
+        read: () => getClaim(claim.claim_id),
+        isDone: (value) => value.source_count === before + 1,
       })
-
       if (result.status === 'confirmed') {
-        setNewExcerpt('')
-        setNewOrigin('')
-        setNewUrl('')
-        await refresh()
-        setConfirmed('External source registered ✓', hash)
-      } else {
-        setPending('Source sent — exact registry entry not confirmed yet', hash)
-      }
-    } catch (raw) {
-      failAction('add external source', raw)
-    }
+        await refreshClaim(claim.claim_id)
+        confirmed('External source added ✓', hash)
+        setNewExcerpt(''); setNewOrigin(''); setNewUrl(''); setNewDigest('')
+      } else pending('Source sent — postcondition not yet confirmed', hash)
+    } catch (raw) { fail('add external source', raw) }
   }
 
-  const onAddVerifiedClaim = async () => {
-    if (!account) return setError('Connect MetaMask first.')
-    if (!claim) return
-    if (!isOwner) return setError('Only the claim author may add sources.')
-
+  const onAddReuse = async () => {
+    if (!account || !claim || !isAuthor) return setError('Only the claim author can add sources.')
     const fromId = Number(fromClaimId)
-    if (!Number.isInteger(fromId) || fromId <= 0) {
-      return setError('Enter a valid verified claim id.')
-    }
-    if (fromId === claim.claim_id) return setError('A claim cannot source itself.')
-    if (claim.source_count >= (config?.max_sources_per_claim ?? 8)) {
-      return setError(`This claim has reached the ${config?.max_sources_per_claim ?? 8}-source limit.`)
-    }
-
-    setError('')
+    if (!Number.isInteger(fromId) || fromId <= 0) return setError('Enter a valid reusable claim id.')
     try {
-      const sourceClaim = await getClaim(fromId)
-      if (!sourceClaim.verified) {
-        return setError(`Claim #${fromId} is not VERIFIED and cannot be reused yet.`)
-      }
-      if (
-        sources.some(
-          (source) =>
-            source.from_claim_id === fromId ||
-            source.excerpt === sourceClaim.text,
-        )
-      ) {
-        return setError(`Claim #${fromId} is already represented in this source set.`)
-      }
-
-      const { hash } = await addVerifiedClaimSource(
-        account,
-        claim.claim_id,
-        fromId,
-      )
-
-      setSubmitted('Verified-claim source submitted — confirming exact source…', hash)
-
-      const result = await waitForStateChange({
-        read: () => getSources(
-          claim.claim_id,
-          1,
-          config?.max_sources_per_claim ?? 8,
-        ),
-        isDone: (value) =>
-          value.some(
-            (source) =>
-              source.from_claim_id === fromId &&
-              source.excerpt === sourceClaim.text,
-          ),
+      const before = claim.source_count
+      const { hash } = await addReuseClaimSource(account, claim.claim_id, fromId)
+      submitted('Typed reuse source submitted — verifying lineage…', hash)
+      const result = await waitForStateChange<SourceRecord[]>({
+        read: () => getSources(claim.claim_id, 1, config?.max_source_records_per_claim ?? 12),
+        isDone: (value) => value.length === before + 1 && value.some((source) => source.from_claim_id === fromId),
       })
-
       if (result.status === 'confirmed') {
+        await refreshClaim(claim.claim_id)
+        confirmed(`Frozen claim #${fromId} added as typed source ✓`, hash)
         setFromClaimId('')
-        await refresh()
-        setConfirmed(`Verified claim #${fromId} linked as a source ✓`, hash)
-      } else {
-        setPending('Verified source sent — exact registry entry not confirmed yet', hash)
-      }
-    } catch (raw) {
-      failAction('add verified claim source', raw)
-    }
+      } else pending('Typed reuse sent — lineage postcondition not yet confirmed', hash)
+    } catch (raw) { fail('add typed reuse source', raw) }
   }
 
-  const onJudgePair = async () => {
-    if (!account) return setError('Connect MetaMask first.')
-    if (!claim) return
-
-    const a = Number(sourceA)
-    const b = Number(sourceB)
-
-    if (!Number.isInteger(a) || !Number.isInteger(b) || a <= 0 || b <= 0) {
-      return setError('Choose two valid source indexes.')
-    }
-    if (a === b) return setError('Choose two different sources.')
-    if (a > sources.length || b > sources.length) return setError('Invalid source index.')
-
-    setError('')
-
+  const onAttest = async (source: SourceRecord) => {
+    if (!account || !claim || !isReviewer) return setError('Only the immutable reviewer can attest provenance.')
     try {
-      const existing = await getPairBySources(claim.claim_id, a, b)
-      if (existing.judged) {
-        setConfirmed(`This pair was already judged: ${existing.verdict}`)
-        await refresh()
-        return
-      }
+      const { hash } = await attestSource(account, claim.claim_id, source.source_index, source.binding_hash)
+      submitted(`Attesting source S${source.source_index}…`, hash)
+      const result = await waitForStateChange<SourceRecord[]>({
+        read: () => getSources(claim.claim_id, 1, config?.max_source_records_per_claim ?? 12),
+        isDone: (value) => value.some((item) => item.source_index === source.source_index && item.provenance_state === 'ATTESTED' && item.active),
+      })
+      if (result.status === 'confirmed') { await refreshClaim(claim.claim_id); confirmed(`Source S${source.source_index} attested ✓`, hash) }
+      else pending('Attestation sent — postcondition not yet confirmed', hash)
+    } catch (raw) { fail('attest source', raw) }
+  }
 
+  const onRevoke = async (source: SourceRecord) => {
+    if (!account || !claim || !isReviewer) return setError('Only the immutable reviewer can revoke provenance.')
+    try {
+      const { hash } = await revokeSource(account, claim.claim_id, source.source_index)
+      submitted(`Revoking source S${source.source_index}…`, hash)
+      const result = await waitForStateChange<SourceRecord[]>({
+        read: () => getSources(claim.claim_id, 1, config?.max_source_records_per_claim ?? 12),
+        isDone: (value) => value.some((item) => item.source_index === source.source_index && item.provenance_state === 'REVOKED' && !item.active),
+      })
+      if (result.status === 'confirmed') { await refreshClaim(claim.claim_id); confirmed(`Source S${source.source_index} revoked ✓`, hash) }
+      else pending('Revocation sent — postcondition not yet confirmed', hash)
+    } catch (raw) { fail('revoke source', raw) }
+  }
+
+  const onJudge = async (a: number, b: number) => {
+    if (!account || !claim) return setError('Connect MetaMask first.')
+    try {
       const { hash } = await judgePair(account, claim.claim_id, a, b)
-      setSubmitted(`Pair S${a} + S${b} submitted to validator consensus…`, hash)
-
+      submitted(`Judging S${a} ↔ S${b} — waiting for semantic result…`, hash)
       const result = await waitForStateChange({
         read: () => getPairBySources(claim.claim_id, a, b),
         isDone: (value) => value.judged,
-        timeoutMs: 180_000,
+        timeoutMs: 240_000,
       })
-
       if (result.status === 'confirmed') {
-        await refresh()
-        setConfirmed(`Pair verdict: ${result.value.verdict} ✓`, hash)
-      } else {
-        setPending('Pair submitted — consensus/state still pending', hash)
-      }
-    } catch (raw) {
-      failAction('judge pair', raw)
-    }
+        await refreshClaim(claim.claim_id)
+        confirmed(`Pair S${a} ↔ S${b}: ${result.value.verdict} ✓`, hash)
+      } else pending('Pair judgment sent — verdict postcondition not yet confirmed', hash)
+    } catch (raw) { fail('judge pair', raw) }
   }
 
-  const verificationPct = useMemo(() => {
-    if (!claim) return 0
-    const pairPart = Math.min(
-      1,
-      claim.independent_pairs / Math.max(1, claim.required_pairs),
-    )
-    const sourcePart = Math.min(
-      1,
-      claim.distinct_independent_sources /
-        Math.max(1, claim.required_distinct_sources),
-    )
-    return Math.round(((pairPart + sourcePart) / 2) * 100)
-  }, [claim])
+  const onFreeze = async () => {
+    if (!account || !claim || !isAuthor) return setError('Only the claim author can freeze the reusable basis.')
+    try {
+      const { hash } = await freezeReuseBasis(account, claim.claim_id)
+      submitted('Freezing complete provenance basis…', hash)
+      const result = await waitForStateChange<ClaimRecord>({
+        read: () => getClaim(claim.claim_id),
+        isDone: (value) => value.basis_frozen && value.reuse_ready && !!value.basis_digest,
+      })
+      if (result.status === 'confirmed') { await refreshClaim(claim.claim_id); confirmed('Reusable provenance basis frozen ✓', hash) }
+      else pending('Freeze sent — frozen-basis postcondition not yet confirmed', hash)
+    } catch (raw) { fail('freeze reuse basis', raw) }
+  }
 
-  const sourceByIndex = useMemo(() => {
-    const map = new Map<number, SourceRecord>()
-    for (const source of sources) map.set(source.source_index, source)
-    return map
-  }, [sources])
+  const completenessPct = claim && claim.active_pair_target > 0
+    ? Math.min(100, Math.round((claim.judged_active_pairs / claim.active_pair_target) * 100))
+    : 0
 
   return (
     <div className="portal-shell">
       <aside className="portal-sidebar">
-        <div className="portal-brand">
-          <SourceGateLogo />
-          <div className="portal-brand-copy">
-            <strong>SourceGate</strong>
-            <span>Provenance independence</span>
-          </div>
-        </div>
-
+        <div className="portal-brand"><SourceGateLogo /><div className="portal-brand-copy"><strong>SourceGate</strong><span>Authenticated provenance · v2.0</span></div></div>
         <div className="sidebar-section">
           <span className="sidebar-kicker">Workspace</span>
           <nav className="portal-nav">
-            <button
-              className={tab === 'overview' ? 'portal-nav-item active' : 'portal-nav-item'}
-              onClick={() => setTab('overview')}
-            >
-              <span className="nav-icon">⌂</span>
-              <span className="nav-label"><strong>Overview</strong><small>Claim & live config</small></span>
-            </button>
-            <button
-              className={tab === 'sources' ? 'portal-nav-item active' : 'portal-nav-item'}
-              onClick={() => setTab('sources')}
-            >
-              <span className="nav-icon">≡</span>
-              <span className="nav-label"><strong>Sources</strong><small>Immutable registry</small></span>
-              <b className="nav-count">{claim?.source_count ?? 0}</b>
-            </button>
-            <button
-              className={tab === 'review' ? 'portal-nav-item active' : 'portal-nav-item'}
-              onClick={() => setTab('review')}
-            >
-              <span className="nav-icon">◇</span>
-              <span className="nav-label"><strong>Pair Review</strong><small>Consensus verdicts</small></span>
-              <b className="nav-count">{claim?.pair_count ?? 0}</b>
-            </button>
+            <button className={`portal-nav-item ${tab === 'overview' ? 'active' : ''}`} onClick={() => setTab('overview')}><span className="nav-icon">⌂</span><span className="nav-label"><strong>Overview</strong><small>Claim + readiness</small></span></button>
+            <button className={`portal-nav-item ${tab === 'provenance' ? 'active' : ''}`} onClick={() => setTab('provenance')}><span className="nav-icon">◆</span><span className="nav-label"><strong>Provenance</strong><small>Attest + revoke</small></span><span className="nav-count">{sources.length}</span></button>
+            <button className={`portal-nav-item ${tab === 'matrix' ? 'active' : ''}`} onClick={() => setTab('matrix')}><span className="nav-icon">⌗</span><span className="nav-label"><strong>Pair matrix</strong><small>Complete all active pairs</small></span><span className="nav-count">{claim?.unjudged_active_pairs ?? 0}</span></button>
           </nav>
         </div>
-
-        <div className="sidebar-section network-section">
-          <span className="sidebar-kicker">Network</span>
-          <div className="network-row"><span className="network-dot" /> <strong>StudioNet</strong><small>61999</small></div>
-          <a
-            className="sidebar-link"
-            href={`${EXPLORER_BASE}/address/${CONTRACT_ADDRESS}`}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <span>Contract</span><strong>{shortAddress(CONTRACT_ADDRESS)} ↗</strong>
-          </a>
-        </div>
-
-        <div className="sidebar-claim-card">
-          <div className="sidebar-claim-top">
-            <span>{!claim ? 'EMPTY REGISTRY' : isOwner ? 'YOUR CLAIM' : 'PUBLIC CLAIM'}</span>
-            <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
-              {claim?.verified ? 'VERIFIED' : 'BUILDING'}
-            </b>
-          </div>
-          <strong>{claim ? `Claim #${claim.claim_id}` : config ? (config.claim_count === 0 ? 'No claims yet' : 'No claim loaded') : 'Loading…'}</strong>
-          <p>{claim ? shortText(claim.text, 82) : config ? (config.claim_count === 0 ? 'Connect a wallet and create the first claim.' : 'Load an existing claim or create a new workspace.') : 'Reading contract state…'}</p>
-          <div className="claim-progress"><div style={{ width: `${verificationPct}%` }} /></div>
-          <small>
-            {claim
-              ? `${claim.independent_pairs}/${claim.required_pairs} pairs · ${claim.distinct_independent_sources}/${claim.required_distinct_sources} sources`
-              : '—'}
-          </small>
-        </div>
-
-        <div className="sidebar-footer">
-          <img src="/genlayer-logo.png" alt="GenLayer" />
-          <div><strong>Built on GenLayer</strong><span>AI consensus + deterministic state</span></div>
-        </div>
+        <div className="sidebar-section network-section"><span className="sidebar-kicker">Network</span><div className="network-row"><i className="network-dot" />StudioNet <small>61999</small></div><a className="sidebar-link" href={`${EXPLORER_BASE}/address/${CONTRACT_ADDRESS}`} target="_blank" rel="noreferrer"><span>Explorer</span><strong>{shortAddress(CONTRACT_ADDRESS)} ↗</strong></a></div>
+        {claim && <div className="sidebar-claim-card"><div className="sidebar-claim-top"><span>CLAIM #{claim.claim_id}</span><span className={claim.basis_frozen ? 'status-pill verified' : claim.reuse_ready ? 'status-pill ready' : 'status-pill building'}>{claim.basis_frozen ? 'FROZEN' : claim.reuse_ready ? 'READY' : 'OPEN'}</span></div><strong>{claim.active_source_count} active sources</strong><p>{claim.text}</p><div className="claim-progress"><div style={{ width: `${completenessPct}%` }} /></div><small>{claim.judged_active_pairs}/{claim.active_pair_target} active pairs judged</small></div>}
+        <div className="sidebar-footer"><img src="/genlayer-logo.png" alt="GenLayer" /><div><strong>GenLayer</strong><span>Semantic consensus + deterministic gates</span></div></div>
       </aside>
 
       <section className="portal-page">
         <header className="portal-topbar">
-          <div className="topbar-title">
-            <span>SourceGate / {tab === 'overview' ? 'Overview' : tab === 'sources' ? 'Sources' : 'Pair Review'}</span>
-            <strong>{tab === 'overview' ? 'Overview' : tab === 'sources' ? 'Source Registry' : 'Pair Review'}</strong>
-          </div>
-
-          <div className="topbar-actions">
-            <span className="top-chip"><i /> StudioNet 61999</span>
-            <a
-              className="top-chip top-link"
-              href={`${EXPLORER_BASE}/address/${CONTRACT_ADDRESS}`}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {shortAddress(CONTRACT_ADDRESS)} ↗
-            </a>
-            <button className="connect-button" onClick={onConnect} disabled={connecting}>
-              {connecting ? 'Connecting…' : account ? shortAddress(account) : 'Connect MetaMask'}
-            </button>
-          </div>
+          <div className="topbar-title"><span>SourceIndependenceGate · StudioNet</span><strong>{claim ? `Claim #${claim.claim_id}` : 'Authenticated provenance gate'}</strong></div>
+          <div className="topbar-actions"><span className="top-chip"><i />v{config?.version ?? '2.0'} · {role}</span><button className="connect-button" onClick={onConnect} disabled={connecting}>{account ? shortAddress(account) : connecting ? 'Connecting…' : 'Connect Wallet'}</button></div>
         </header>
 
         <main className="portal-content">
-          {tab === 'overview' ? (
-            <section className="portal-hero">
-              <div className="hero-copy-v4">
-                <span className="hero-chip">PROVENANCE INDEPENDENCE</span>
-                <h1>Don’t count echoes as corroboration.</h1>
-                <p>
-                  Commit immutable excerpts, compare one source pair at a time with
-                  GenLayer consensus, and unlock verified-claim reuse only after the
-                  deterministic threshold is reached.
-                </p>
-                <div className="hero-facts">
-                  <span><b>2</b> independent pairs</span>
-                  <span><b>3</b> distinct sources</span>
-                  <span><b>0</b> URL fetches</span>
-                </div>
-              </div>
+          <section className="portal-hero">
+            <div className="hero-copy-v4"><span className="hero-chip">AUTHENTICATED PROVENANCE · COMPLETE MATRIX</span><h1>Reuse only after the whole basis clears.</h1><p>SourceGate v2 separates author registration, reviewer provenance attestation, semantic pair independence, and deterministic typed-reuse authorization. One unjudged or derivative active pair blocks reuse.</p><div className="hero-facts"><span><b>3+</b> active sources</span><span><b>100%</b> active pairs judged</span><span><b>0</b> derivative active pairs</span><span><b>1</b> explicit freeze</span></div></div>
+            <div className="hero-claim-card"><div className="hero-claim-top"><span>{claim ? `CLAIM #${claim.claim_id}` : 'NO CLAIM LOADED'}</span><span className={claim?.basis_frozen ? 'status-pill verified' : claim?.reuse_ready ? 'status-pill ready' : 'status-pill building'}>{claim?.basis_frozen ? 'FROZEN' : claim?.reuse_ready ? 'REUSE_READY' : 'NOT READY'}</span></div><strong>{claim ? `${claim.attested_active_source_count}/${claim.active_source_count} attested` : 'Load or create a claim'}</strong><p>{claim?.text ?? 'The frontend never treats transaction finalization alone as proof. Every write waits for the required contract postcondition.'}</p><div className="hero-claim-metrics"><span>Pairs <b>{claim?.judged_active_pairs ?? 0}/{claim?.active_pair_target ?? 0}</b></span><span>Semantic evals <b>{claim?.semantic_eval_count ?? 0}</b></span><span>Reuse <b>{claim?.reuse_count ?? 0}</b></span></div></div>
+          </section>
 
-              <div className="hero-claim-card">
-                <div className="hero-claim-top">
-                  <span>{!claim ? 'EMPTY REGISTRY' : isOwner ? 'YOUR CLAIM' : 'PUBLIC CLAIM'}</span>
-                  <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
-                    {claim?.verified ? 'VERIFIED' : 'BUILDING'}
-                  </b>
-                </div>
-                <strong>{claim ? `Claim #${claim.claim_id}` : config ? (config.claim_count === 0 ? 'No claims yet' : 'No claim loaded') : 'Loading…'}</strong>
-                <p>{claim ? shortText(claim.text, 115) : config ? (config.claim_count === 0 ? 'This deployment has no claims yet. Create the first workspace below.' : 'Load an existing claim below or create a fresh workspace.') : 'Reading contract state…'}</p>
-                <div className="claim-progress light"><div style={{ width: `${verificationPct}%` }} /></div>
-                <div className="hero-claim-metrics">
-                  <span><b>{claim?.independent_pairs ?? 0}/{claim?.required_pairs ?? 2}</b> pairs</span>
-                  <span><b>{claim?.distinct_independent_sources ?? 0}/{claim?.required_distinct_sources ?? 3}</b> sources</span>
-                </div>
-              </div>
+          <div className="claim-strip-v4"><div><span className="section-eyebrow">OPEN CLAIM</span><strong>{claim ? `#${claim.claim_id}` : '—'}</strong><p>{claim ? shortHash(claim.basis_digest || 'unfrozen') : 'Load an existing claim id.'}</p></div><div className="claim-strip-right"><input value={claimInput} onChange={(e) => setClaimInput(e.target.value)} placeholder="Claim ID" inputMode="numeric" /><button className="soft-button" onClick={onLoadClaim} disabled={loading}>Load</button><button className="soft-button" onClick={() => claim && refreshClaim(claim.claim_id)} disabled={!claim || loading}>Refresh</button></div></div>
+
+          {action.phase !== 'idle' && <div className={`activity-banner ${action.phase}`}><span className="activity-dot" /><strong>{action.label}</strong>{action.message && <span>{action.message}</span>}{action.hash && <span title={action.hash}>{shortHash(action.hash)}</span>}</div>}
+          {error && <div className="error-banner-v4"><span>!</span><strong>{error}</strong><button onClick={() => setError('')}>×</button></div>}
+
+          {tab === 'overview' && <div className="page-stack">
+            <section className="metric-row-v4">
+              <article className="metric-v4"><span>ACTIVE SOURCES</span><strong>{claim?.active_source_count ?? 0}</strong><small>minimum {config?.min_active_sources_for_reuse ?? 3} for reuse</small></article>
+              <article className="metric-v4"><span>ATTESTED ACTIVE</span><strong>{claim?.attested_active_source_count ?? 0}</strong><small>reviewer-bound provenance</small></article>
+              <article className="metric-v4"><span>UNJUDGED ACTIVE PAIRS</span><strong>{claim?.unjudged_active_pairs ?? 0}</strong><small>must reach zero</small></article>
+              <article className="metric-v4"><span>DERIVATIVE ACTIVE PAIRS</span><strong>{claim?.derivative_active_pairs ?? 0}</strong><small>any one blocks typed reuse</small></article>
             </section>
-          ) : (
-            <section className="claim-strip-v4">
-              <div>
-                <span className="section-eyebrow">{!claim ? 'EMPTY REGISTRY' : isOwner ? 'YOUR CLAIM' : 'PUBLIC CLAIM'}</span>
-                <strong>{claim ? `Claim #${claim.claim_id}` : config ? 'No claim loaded' : 'Loading…'}</strong>
-                <p>{claim ? shortText(claim.text, 150) : config ? 'Create a claim or load an existing id.' : 'Reading contract state…'}</p>
-              </div>
-              <div className="claim-strip-right">
-                <b className={claim?.verified ? 'status-pill verified' : 'status-pill building'}>
-                  {claim?.verified ? 'VERIFIED' : 'BUILDING'}
-                </b>
-                <span>{claim ? `${claim.independent_pairs}/${claim.required_pairs} pairs · ${claim.distinct_independent_sources}/${claim.required_distinct_sources} sources` : '—'}</span>
-              </div>
-            </section>
-          )}
 
-          {action.phase !== 'idle' && (
-            <div className={`activity-banner ${action.phase}`}>
-              <span className="activity-dot" />
-              <strong>{action.label}</strong>
-              {action.message && <span>{action.message}</span>}
-              {action.hash && (
-                <a href={`${EXPLORER_BASE}/transactions/${action.hash}`} target="_blank" rel="noreferrer">View tx ↗</a>
-              )}
-            </div>
-          )}
-
-          {error && (
-            <div className="error-banner-v4">
-              <span>!</span><div>{error}</div><button onClick={() => setError('')}>×</button>
-            </div>
-          )}
-
-          {tab === 'overview' && (
-            <div className="page-stack">
-              <section className="metric-row-v4">
-                <article className="metric-v4"><span>CLAIM</span><strong>#{claim?.claim_id ?? '—'}</strong><small>{claim ? (isOwner ? 'Your workspace' : 'Public claim') : 'No claim loaded'}</small></article>
-                <article className="metric-v4"><span>SOURCES</span><strong>{claim?.source_count ?? '—'}</strong><small>Immutable excerpts</small></article>
-                <article className="metric-v4"><span>INDEPENDENT</span><strong>{claim?.independent_pairs ?? '—'}</strong><small>Need {claim?.required_pairs ?? 2} positive pairs</small></article>
-                <article className="metric-v4"><span>DERIVATIVE</span><strong>{claim?.derivative_pairs ?? '—'}</strong><small>Shared-origin pairs</small></article>
-              </section>
-
-              <section className="overview-workspace-grid">
-                <article className="surface-card create-card-v4">
-                  <div className="surface-head">
-                    <div><span className="section-eyebrow">CREATE</span><h2>New claim</h2></div>
-                  </div>
-                  <p className="surface-note">Enter a claim and the source excerpts you want to register on-chain.</p>
-
-                  <label>CLAIM TEXT</label>
-                  <textarea
-                    value={draftClaim}
-                    onChange={(e) => setDraftClaim(e.target.value)}
-                    rows={2}
-                    placeholder="Enter claim text"
-                  />
-
-                  <div className="draft-grid-v4">
-                    {draftSources.map((source, index) => (
-                      <div className="draft-mini-card" key={index}>
-                        <div className="draft-mini-head"><span>S{index + 1}</span><strong>Source {index + 1}</strong></div>
-                        <textarea
-                          value={source.excerpt}
-                          onChange={(e) => {
-                            const next = [...draftSources]
-                            next[index] = { ...next[index], excerpt: e.target.value }
-                            setDraftSources(next)
-                          }}
-                          rows={3}
-                          placeholder="Paste source excerpt"
-                        />
-                        <input
-                          value={source.origin_label}
-                          onChange={(e) => {
-                            const next = [...draftSources]
-                            next[index] = { ...next[index], origin_label: e.target.value }
-                            setDraftSources(next)
-                          }}
-                          placeholder="Origin label"
-                        />
-                      </div>
-                    ))}
-                  </div>
-
-                  <button className="primary-action" onClick={onCreateClaim} disabled={!account || busy}>
-                    {account ? 'Create Fresh Claim' : 'Connect wallet to create'}
-                  </button>
-                </article>
-
-                <div className="overview-side-stack">
-                  <article className="surface-card">
-                    <div className="surface-head"><div><span className="section-eyebrow">OPEN</span><h2>Existing claim</h2></div></div>
-                    <p className="surface-note">{config && config.claim_count === 0
-                    ? 'No claims exist on this deployment yet. Create the first workspace.'
-                    : 'Load any existing claim by id. Source additions require its author; pair judging is public.'}</p>
-                    <label>CLAIM ID</label>
-                    <div className="inline-control">
-                      <input value={claimInput} onChange={(e) => setClaimInput(e.target.value)} inputMode="numeric" />
-                      <button className="secondary-action" onClick={onLoadClaim} disabled={loading}>{loading ? 'Loading…' : 'Load'}</button>
-                    </div>
-                    <div className="claim-summary-v4">
-                      <span className={claim?.verified ? 'summary-seal verified' : 'summary-seal'}>{claim?.verified ? '✓' : '…'}</span>
-                      <div>
-                        <strong>{claim ? (claim.verified ? 'Verified claim' : 'Verification in progress') : 'Waiting for claim'}</strong>
-                        <p>{claim?.text ?? 'Create or load a claim to begin.'}</p>
-                      </div>
-                    </div>
-                  </article>
-
-                  <article className="surface-card config-card-v4">
-                    <div className="surface-head"><div><span className="section-eyebrow">ONCHAIN</span><h2>Live configuration</h2></div><span className="version-badge">{config ? `v${config.version}` : '…'}</span></div>
-                    <div className="config-list-v4">
-                      <div><span>Verification</span><strong>{config ? `${config.required_independent_pairs} pairs / ${config.required_distinct_independent_sources} sources` : '—'}</strong></div>
-                      <div><span>URLs in prompt</span><strong>{config ? (config.urls_enter_consensus_prompt ? 'YES' : 'NO') : '—'}</strong></div>
-                      <div><span>Pair judging</span><strong>{config ? (config.public_pair_judging ? 'PUBLIC' : 'RESTRICTED') : '—'}</strong></div>
-                      <div><span>Global admin</span><strong>{config ? (config.global_admin ? 'YES' : 'NO') : '—'}</strong></div>
-                      <div><span>Project deployment</span><a href={`${EXPLORER_BASE}/address/${CONTRACT_ADDRESS}`} target="_blank" rel="noreferrer"><strong>{shortAddress(CONTRACT_ADDRESS)} ↗</strong></a></div>
-                      <div><span>Runtime evidence</span><a href={`${EXPLORER_BASE}/address/${RUNTIME_EVIDENCE_ADDRESS}`} target="_blank" rel="noreferrer"><strong>{shortAddress(RUNTIME_EVIDENCE_ADDRESS)} ↗</strong></a></div>
-                      <div><span>Frozen source</span><strong title={FROZEN_SOURCE_SHA256}>{FROZEN_SOURCE_SHA256.slice(0, 10)}…{FROZEN_SOURCE_SHA256.slice(-8)}</strong></div>
-                    </div>
-                  </article>
-                </div>
-              </section>
-
-              <section className="flow-row-v4">
-                <article><span>01</span><strong>Commit</strong><p>Claim + immutable excerpts</p></article>
-                <article><span>02</span><strong>Compare</strong><p>One pair per consensus call</p></article>
-                <article><span>03</span><strong>Accumulate</strong><p>2 positive pairs across 3 sources</p></article>
-                <article><span>04</span><strong>Reuse</strong><p>Verified claims unlock typed reuse</p></article>
-              </section>
-            </div>
-          )}
-
-          {tab === 'sources' && (
-            <div className="page-stack">
-              <div className="page-section-title"><div><span className="section-eyebrow">SOURCE REGISTRY</span><h2>Immutable excerpts</h2><p>URLs are human-reference metadata only and never enter validator consensus.</p></div><span className="large-count">{sources.length} sources</span></div>
-
-              <section className="sources-layout-v4">
-                <article className="surface-card source-registry-card">
-                  <div className="source-grid-v4">
-                    {sources.map((source) => (
-                      <article className="source-tile-v4" key={source.source_index}>
-                        <div className="source-tile-top">
-                          <span>S{source.source_index}</span>
-                          {source.from_claim_id > 0 && <b>Verified Claim #{source.from_claim_id}</b>}
-                        </div>
-                        <p>{source.excerpt}</p>
-                        <footer>
-                          <span>{source.origin_label}</span>
-                          {source.reference_url && (() => {
-                            const href = safeHttpUrl(source.reference_url)
-                            return href ? (
-                              <a href={href} target="_blank" rel="noreferrer noopener">reference ↗</a>
-                            ) : (
-                              <span className="muted-url">invalid link</span>
-                            )
-                          })()}
-                        </footer>
-                      </article>
-                    ))}
-                  </div>
-                </article>
-
-                <div className="sources-actions-v4">
-                  {account && !isOwner && claim && (
-                    <div className="warning-callout">This claim belongs to {shortAddress(claim.author)}. Only its author can add sources.</div>
-                  )}
-
-                  <article className="surface-card">
-                    <div className="surface-head"><div><span className="section-eyebrow">ADD</span><h2>External excerpt</h2></div></div>
-                    <p className="surface-note">Validators see the committed excerpt, never the reference URL.</p>
-                    <label>EXCERPT</label>
-                    <textarea value={newExcerpt} onChange={(e) => setNewExcerpt(e.target.value)} rows={4} />
-                    <label>ORIGIN LABEL</label>
-                    <input value={newOrigin} onChange={(e) => setNewOrigin(e.target.value)} />
-                    <label>REFERENCE URL · OPTIONAL</label>
-                    <input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="https://…" />
-                    <button className="primary-action" onClick={onAddExternal} disabled={writesDisabled || !isOwner || busy || !newExcerpt.trim()}>Add External Source</button>
-                  </article>
-
-                  <article className="surface-card">
-                    <div className="surface-head"><div><span className="section-eyebrow">REUSE</span><h2>Verified claim source</h2></div></div>
-                    <p className="surface-note">An unverified claim cannot be reused through this typed path.</p>
-                    <label>FROM CLAIM ID</label>
-                    <input value={fromClaimId} onChange={(e) => setFromClaimId(e.target.value)} inputMode="numeric" />
-                    <button className="secondary-action full-width" onClick={onAddVerifiedClaim} disabled={writesDisabled || !isOwner || busy || !fromClaimId.trim()}>Add Verified Claim as Source</button>
-                  </article>
-                </div>
-              </section>
-            </div>
-          )}
-
-          {tab === 'review' && (
-            <div className="page-stack">
-              <div className="page-section-title"><div><span className="section-eyebrow">CONSENSUS</span><h2>Judge source independence</h2><p>One source pair per transaction. The model judges provenance relation, not truth or source reputation.</p></div><span className="large-count">{pairs.length} judged</span></div>
-
-              <section className="review-layout-v4">
-                <article className="surface-card judge-panel-v4">
-                  {account && !isOwner && claim && (
-                    <div className="warning-callout">Public claim owned by {shortAddress(claim.author)}. Pair judging is intentionally public; the verdict is permanent and this pair cannot be judged again.</div>
-                  )}
-
-                  <div className="pair-selects-v4">
-                    <div><label>SOURCE A</label><select value={sourceA} onChange={(e) => setSourceA(e.target.value)}>{sources.map((source) => <option key={source.source_index} value={source.source_index}>S{source.source_index} · {source.origin_label}</option>)}</select></div>
-                    <div><label>SOURCE B</label><select value={sourceB} onChange={(e) => setSourceB(e.target.value)}>{sources.map((source) => <option key={source.source_index} value={source.source_index}>S{source.source_index} · {source.origin_label}</option>)}</select></div>
-                  </div>
-
-                  <div className="pair-preview-v4">
-                    <div><span>S{sourceA}</span><p>{sourceByIndex.get(Number(sourceA))?.excerpt ?? 'Choose a source.'}</p></div>
-                    <div className="pair-vs">VS</div>
-                    <div><span>S{sourceB}</span><p>{sourceByIndex.get(Number(sourceB))?.excerpt ?? 'Choose a source.'}</p></div>
-                  </div>
-
-                  <button className="primary-action" onClick={onJudgePair} disabled={writesDisabled || busy || sources.length < 2}>Judge Pair with Consensus</button>
-                </article>
-
-                <article className="surface-card gate-card-v4">
-                  <div className="gate-hero-v4">
-                    <span className={claim?.verified ? 'gate-orb verified' : 'gate-orb'}>{claim?.verified ? '✓' : `${verificationPct}%`}</span>
-                    <div><span className="section-eyebrow">VERIFICATION GATE</span><h2>{claim?.verified ? 'Verified' : 'Building coverage'}</h2><p>{claim?.verified ? 'Downstream typed reuse is unlocked.' : 'Need both threshold conditions.'}</p></div>
-                  </div>
-                  <div className="gate-list-v4">
-                    <div><span>Independent pairs</span><strong>{claim?.independent_pairs ?? 0} / {claim?.required_pairs ?? 2}</strong></div>
-                    <div><span>Distinct sources</span><strong>{claim?.distinct_independent_sources ?? 0} / {claim?.required_distinct_sources ?? 3}</strong></div>
-                    <div><span>Derivative pairs</span><strong>{claim?.derivative_pairs ?? 0}</strong></div>
-                  </div>
-                  <div className="info-callout">VERIFIED does not mean every source is mutually independent. Unjudged pairs remain unknown.</div>
-                </article>
-              </section>
-
-              <article className="surface-card audit-v4">
-                <div className="surface-head"><div><span className="section-eyebrow">AUDIT TRAIL</span><h2>Pair verdict history</h2></div><span className="version-badge">{pairs.length} records</span></div>
-                {pairs.length === 0 ? (
-                  <div className="empty-state-v4">No pairs judged for this claim yet.</div>
-                ) : (
-                  <div className="audit-table-v4">
-                    <div className="audit-head"><span>PAIR</span><span>SOURCES</span><span>VERDICT</span><span>MODE</span></div>
-                    {pairs.map((pair) => (
-                      <div className="audit-row" key={pair.pair_id}>
-                        <span>#{pair.pair_id}</span>
-                        <div><strong>S{pair.source_a} ↔ S{pair.source_b}</strong><small>{shortText(sourceByIndex.get(pair.source_a)?.origin_label ?? `Source ${pair.source_a}`, 32)} · {shortText(sourceByIndex.get(pair.source_b)?.origin_label ?? `Source ${pair.source_b}`, 32)}</small></div>
-                        <span className={pair.verdict === 'INDEPENDENT_CORROBORATION' ? 'verdict-pill independent' : 'verdict-pill derivative'}>{pair.verdict === 'INDEPENDENT_CORROBORATION' ? 'INDEPENDENT' : 'DERIVATIVE'}</span>
-                        <span className="mode-pill">{pair.used_cache ? 'CACHE' : 'CONSENSUS'}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+            <section className="overview-workspace-grid">
+              <article className="surface-card">
+                <div className="surface-head"><div><span className="section-eyebrow">CREATE</span><h2>New claim + immutable reviewer</h2></div><span className="version-badge">v2.0</span></div>
+                <p className="surface-note">Author registers source metadata/digests. The distinct reviewer later attests the exact binding hash after off-chain provenance verification.</p>
+                <label>CLAIM TEXT</label><textarea rows={3} value={draftClaim} onChange={(e) => setDraftClaim(e.target.value)} placeholder="State the claim being corroborated." />
+                <label>REVIEWER WALLET · MUST DIFFER FROM AUTHOR</label><input value={draftReviewer} onChange={(e) => setDraftReviewer(e.target.value)} placeholder="0x…" />
+                <div className="draft-grid-v4">{drafts.map((source, index) => <div className="draft-mini-card" key={index}><div className="draft-mini-head"><span>S{index + 1}</span><strong>EXTERNAL SOURCE BUNDLE</strong></div><textarea rows={3} value={source.excerpt} onChange={(e) => setDrafts((all) => all.map((item, i) => i === index ? { ...item, excerpt: e.target.value } : item))} placeholder="Source excerpt" /><input value={source.origin_label} onChange={(e) => setDrafts((all) => all.map((item, i) => i === index ? { ...item, origin_label: e.target.value } : item))} placeholder="Origin label" /><input value={source.reference_url} onChange={(e) => setDrafts((all) => all.map((item, i) => i === index ? { ...item, reference_url: e.target.value } : item))} placeholder="Reference locator / URL" /><input value={source.evidence_digest} onChange={(e) => setDrafts((all) => all.map((item, i) => i === index ? { ...item, evidence_digest: e.target.value } : item))} placeholder="SHA-256 evidence digest (64 hex)" /></div>)}</div>
+                <button className="primary-action" onClick={onCreateClaim} disabled={!account || busy}>Create Claim</button>
               </article>
-            </div>
-          )}
+
+              <div className="overview-side-stack">
+                <article className="surface-card"><div className="surface-head"><div><span className="section-eyebrow">REUSE GATE</span><h2>{claim?.basis_frozen ? 'Frozen & reusable' : claim?.reuse_ready ? 'Ready to freeze' : 'Basis incomplete'}</h2></div></div><div className="config-list-v4"><div><span>All active sources attested</span><strong>{claim && claim.active_source_count === claim.attested_active_source_count ? 'YES' : 'NO'}</strong></div><div><span>Minimum active sources</span><strong>{claim && claim.active_source_count >= (config?.min_active_sources_for_reuse ?? 3) ? 'PASS' : 'BLOCK'}</strong></div><div><span>All active pairs judged</span><strong>{claim?.unjudged_active_pairs === 0 && (claim?.active_pair_target ?? 0) > 0 ? 'PASS' : 'BLOCK'}</strong></div><div><span>No derivative active pair</span><strong>{claim?.derivative_active_pairs === 0 ? 'PASS' : 'BLOCK'}</strong></div><div><span>Basis frozen</span><strong>{claim?.basis_frozen ? 'YES' : 'NO'}</strong></div></div>{claim?.reuse_ready && !claim.basis_frozen && <button className="primary-action" onClick={onFreeze} disabled={!isAuthor || busy}>Freeze Reuse Basis</button>}<div className="info-callout">Evidence digests bind registered metadata; the contract does not fetch URLs or prove external truth. Provenance authentication is the reviewer boundary.</div></article>
+                <article className="surface-card"><div className="surface-head"><div><span className="section-eyebrow">DEPLOYMENT</span><h2>Frozen source parity</h2></div></div><div className="config-list-v4"><div><span>Contract</span><strong>{shortAddress(CONTRACT_ADDRESS)}</strong></div><div><span>Version</span><strong>{config?.version ?? '2.0'}</strong></div><div><span>Runtime evidence</span><strong>{shortAddress(RUNTIME_EVIDENCE_ADDRESS)}</strong></div><div><span>SHA-256</span><strong title={FROZEN_SOURCE_SHA256}>{shortHash(FROZEN_SOURCE_SHA256)}</strong></div></div></article>
+              </div>
+            </section>
+
+            <section className="flow-row-v4"><article><span>01</span><strong>Register</strong><p>Author commits source bundle + evidence digest.</p></article><article><span>02</span><strong>Attest</strong><p>Distinct reviewer authenticates exact binding.</p></article><article><span>03</span><strong>Judge all pairs</strong><p>Complete matrix; one derivative blocks reuse.</p></article><article><span>04</span><strong>Freeze</strong><p>Author locks a complete REUSE_READY basis.</p></article></section>
+          </div>}
+
+          {tab === 'provenance' && <div className="page-stack">
+            <div className="page-section-title"><div><span className="section-eyebrow">PROVENANCE REGISTRY</span><h2>Authenticate exact source bindings</h2><p>Reviewer actions are role-gated; author cannot self-attest.</p></div><span className="large-count">{claim ? `${claim.attested_active_source_count}/${claim.active_source_count} attested` : 'No claim'}</span></div>
+            <section className="sources-layout-v4">
+              <article className="surface-card source-registry-card"><div className="source-grid-v4">{sources.length === 0 ? <div className="empty-state-v4">Load a claim to inspect its provenance basis.</div> : sources.map((source) => <article className={`source-tile-v4 ${!source.active ? 'revoked-source' : ''}`} key={source.source_index}><div className="source-tile-top"><span>S{source.source_index}</span><div className="tile-badges"><b>{source.kind}</b><span className={statusClass(source)}>{source.provenance_state}</span></div></div><p>{source.excerpt}</p><div className="binding-grid"><span>Binding <strong title={source.binding_hash}>{shortHash(source.binding_hash)}</strong></span><span>Evidence <strong title={source.evidence_digest}>{shortHash(source.evidence_digest)}</strong></span></div><footer><span>{source.origin_label}</span>{source.from_claim_id > 0 && <span>Claim #{source.from_claim_id}</span>}{source.reference_url && (() => { const href = safeHttpUrl(source.reference_url); return href ? <a href={href} target="_blank" rel="noreferrer noopener">reference ↗</a> : <span>locator stored</span> })()}</footer>{isReviewer && source.provenance_state === 'PROPOSED' && source.active && !claim?.basis_frozen && <button className="secondary-action full-width" onClick={() => onAttest(source)} disabled={busy}>Attest Exact Binding</button>}{isReviewer && source.provenance_state === 'ATTESTED' && source.active && !claim?.basis_frozen && <button className="danger-action full-width" onClick={() => onRevoke(source)} disabled={busy}>Revoke From Active Basis</button>}</article>)}</div></article>
+
+              <div className="sources-actions-v4">
+                <article className="surface-card"><div className="surface-head"><div><span className="section-eyebrow">AUTHOR</span><h2>Add external source</h2></div></div><label>EXCERPT</label><textarea rows={4} value={newExcerpt} onChange={(e) => setNewExcerpt(e.target.value)} /><label>ORIGIN LABEL</label><input value={newOrigin} onChange={(e) => setNewOrigin(e.target.value)} /><label>REFERENCE LOCATOR</label><input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="https://… or immutable locator" /><label>SHA-256 EVIDENCE DIGEST</label><input value={newDigest} onChange={(e) => setNewDigest(e.target.value)} placeholder="64 hex" /><button className="primary-action" onClick={onAddExternal} disabled={!isAuthor || busy || !!claim?.basis_frozen}>Add External Source</button></article>
+                <article className="surface-card"><div className="surface-head"><div><span className="section-eyebrow">TYPED REUSE</span><h2>Add frozen claim source</h2></div></div><p className="surface-note">The source claim must already be REUSE_READY and frozen. The contract preserves explicit from_claim_id lineage.</p><label>FROM CLAIM ID</label><input value={fromClaimId} onChange={(e) => setFromClaimId(e.target.value)} inputMode="numeric" /><button className="secondary-action full-width" onClick={onAddReuse} disabled={!isAuthor || busy || !!claim?.basis_frozen}>Add Reuse Claim Source</button></article>
+              </div>
+            </section>
+          </div>}
+
+          {tab === 'matrix' && <div className="page-stack">
+            <div className="page-section-title"><div><span className="section-eyebrow">COMPLETE ACTIVE PAIR MATRIX</span><h2>Every active pair must resolve</h2><p>Pair judging is public, but only active + reviewer-attested sources are eligible.</p></div><span className="large-count">{claim?.judged_active_pairs ?? 0}/{claim?.active_pair_target ?? 0} judged</span></div>
+            <section className="review-layout-v4">
+              <article className="surface-card judge-panel-v4"><div className="matrix-list">{activePairs.length === 0 ? <div className="empty-state-v4">No active pair matrix yet.</div> : activePairs.map(({ a, b, pair }) => { const eligible = a.provenance_state === 'ATTESTED' && b.provenance_state === 'ATTESTED' && a.active && b.active && !claim?.basis_frozen; return <div className="matrix-row" key={pairKey(a.source_index, b.source_index)}><div><strong>S{a.source_index} ↔ S{b.source_index}</strong><small>{a.origin_label} · {b.origin_label}</small></div>{pair ? <span className={pair.verdict === 'INDEPENDENT_CORROBORATION' ? 'verdict-pill independent' : 'verdict-pill derivative'}>{pair.verdict === 'INDEPENDENT_CORROBORATION' ? 'INDEPENDENT' : 'DERIVATIVE'}</span> : <span className="verdict-pill unjudged">UNJUDGED</span>}<span className="mode-pill">{pair ? (pair.semantic_eval_used ? 'SEMANTIC' : 'DETERMINISTIC') : eligible ? 'ELIGIBLE' : 'BLOCKED'}</span>{!pair && <button className="soft-button" onClick={() => onJudge(a.source_index, b.source_index)} disabled={!account || busy || !eligible}>Judge</button>}</div> })}</div></article>
+              <article className="surface-card gate-card-v4"><div className="gate-hero-v4"><span className={claim?.basis_frozen || claim?.reuse_ready ? 'gate-orb verified' : 'gate-orb'}>{claim?.basis_frozen ? '✓' : `${completenessPct}%`}</span><div><span className="section-eyebrow">REUSE GATE</span><h2>{claim?.basis_frozen ? 'Basis frozen' : claim?.reuse_ready ? 'REUSE_READY' : 'Blocked'}</h2><p>{claim?.basis_frozen ? 'Exact reusable basis is immutable.' : claim?.reuse_ready ? 'Author can freeze now.' : 'Complete authentication and pair matrix first.'}</p></div></div><div className="gate-list-v4"><div><span>Required active pairs</span><strong>{basis?.required_pair_count ?? 0}</strong></div><div><span>Judged active pairs</span><strong>{basis?.judged_active_pairs ?? 0}</strong></div><div><span>Independent active pairs</span><strong>{basis?.independent_active_pairs ?? 0}</strong></div><div><span>Derivative active pairs</span><strong>{basis?.derivative_active_pairs ?? 0}</strong></div><div><span>Unjudged active pairs</span><strong>{basis?.unjudged_active_pairs ?? 0}</strong></div></div>{claim?.reuse_ready && !claim.basis_frozen && <button className="primary-action" onClick={onFreeze} disabled={!isAuthor || busy}>Freeze Reuse Basis</button>} {claim?.basis_frozen && <div className="info-callout">Basis digest: <strong title={claim.basis_digest}>{shortHash(claim.basis_digest)}</strong></div>}</article>
+            </section>
+
+            <article className="surface-card audit-v4"><div className="surface-head"><div><span className="section-eyebrow">AUDIT TRAIL</span><h2>Historical pair verdicts</h2></div><span className="version-badge">{pairs.length} records</span></div>{pairs.length === 0 ? <div className="empty-state-v4">No judged pairs yet.</div> : <div className="audit-table-v4"><div className="audit-head"><span>PAIR</span><span>SOURCES</span><span>VERDICT</span><span>MODE</span></div>{pairs.map((pair) => <div className="audit-row" key={pair.pair_id}><span>#{pair.pair_id}</span><div><strong>S{pair.source_a} ↔ S{pair.source_b}</strong><small>claim #{claim?.claim_id}</small></div><span className={pair.verdict === 'INDEPENDENT_CORROBORATION' ? 'verdict-pill independent' : 'verdict-pill derivative'}>{pair.verdict === 'INDEPENDENT_CORROBORATION' ? 'INDEPENDENT' : 'DERIVATIVE'}</span><span className="mode-pill">{pair.semantic_eval_used ? 'SEMANTIC' : 'DETERMINISTIC'}</span></div>)}</div>}</article>
+          </div>}
         </main>
       </section>
     </div>

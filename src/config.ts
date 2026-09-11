@@ -1,10 +1,9 @@
 export const CONTRACT_ADDRESS =
-  '0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a' as const
+  '0x0F011a04951320e194eB6EF279F3978e59A95350' as const
 
-export const RUNTIME_EVIDENCE_ADDRESS =
-  '0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b' as const
+export const RUNTIME_EVIDENCE_ADDRESS = CONTRACT_ADDRESS
 
 export const FROZEN_SOURCE_SHA256 =
-  'ead0b54660d1ba82b3ffd6cf02a54da5ce89d898226da1b8b30cb2f60429208f' as const
+  '170d99a167efa304541be55c347d5284fa1fc8eb79252d12384db05a40b56606' as const
 
 export const EXPLORER_BASE = 'https://explorer-studio.genlayer.com'

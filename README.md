@@ -1,213 +1,137 @@
-# SourceGate
+# SourceGate v2.0
 
-**Auditable source-independence gating on GenLayer.**
+SourceGate is a GenLayer dApp for building an authenticated provenance basis before a claim can be reused as a typed source downstream.
 
-SourceGate is a GenLayer dApp built on the `SourceIndependenceGate` Intelligent
-Contract. A claim author commits immutable source excerpts, any connected user
-may submit one source pair at a time for validator consensus, and the contract
-updates verification state using deterministic thresholds and replay guards.
+The v2 contract separates four responsibilities:
 
-The semantic question is deliberately narrow: whether two committed excerpts
-**appear independently grounded** or likely derive from a shared informational
-origin. The contract does not decide whether the underlying claim is true and
-does not score source reputation.
+1. **Author registration** — an author commits a claim, a distinct immutable reviewer, and immutable source bundles.
+2. **Reviewer provenance attestation** — only the reviewer may attest the exact on-chain `binding_hash` after checking provenance off-chain.
+3. **Semantic independence adjudication** — GenLayer consensus judges one exact active + attested source pair as `INDEPENDENT_CORROBORATION` or `DERIVATIVE_SOURCE_CLUSTER`.
+4. **Deterministic typed-reuse authorization** — reuse is allowed only after the complete active pair matrix is independent and the author freezes the basis.
 
-## Deployment and evidence
-
-### Clean project deployment
-
-The public dApp is pinned to the clean project deployment:
+## Production contract identity
 
 ```text
-0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a
+Project                 SourceGate
+Contract class          SourceIndependenceGate
+Contract version        2.0
+StudioNet deployment    0x0F011a04951320e194eB6EF279F3978e59A95350
+Frozen source SHA-256   170d99a167efa304541be55c347d5284fa1fc8eb79252d12384db05a40b56606
 ```
 
 Explorer:
 
 ```text
-https://explorer-studio.genlayer.com/address/0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a
+https://explorer-studio.genlayer.com/address/0x0F011a04951320e194eB6EF279F3978e59A95350
 ```
 
-This deployment was created from the frozen source and intentionally left with
-an empty registry (`claim_count = 0`) before public use.
+The frontend is pinned to this v2 deployment in `src/config.ts`.
 
-### Runtime evidence deployment
+## Reuse rule
 
-Load-bearing runtime validation was performed on:
+A claim is `REUSE_READY` only while all of these are true:
+
+- at least 3 active sources;
+- every active source is reviewer-attested;
+- every pair in the active source set has been judged;
+- every active pair is `INDEPENDENT_CORROBORATION`;
+- zero derivative active pairs;
+- zero unjudged active pairs.
+
+`REUSE_READY` is recomputed before freeze. Adding a source or revoking an attested source changes the active basis and can make readiness false again.
+
+The author must then call `freeze_reuse_basis()` before another claim can use the typed reuse path. Freeze locks the reusable basis and records its deterministic `basis_digest`.
+
+## Honest provenance boundary
+
+The contract binds source metadata and a non-zero 32-byte evidence digest. It does **not** fetch URLs, prove that an external artifact exists, establish external truth, or decide source reputation.
+
+The distinct reviewer is the authenticated off-chain provenance-verification boundary. Reviewer attestation signs the exact immutable `binding_hash` stored for that source.
+
+## Deterministic protections
+
+- reviewer must differ from author;
+- only reviewer may attest or revoke provenance;
+- only active + attested sources may enter pair judging;
+- exact and reversed pair replay share one normalized pair and replay reverts;
+- same evidence digest is deterministically derivative without spending a semantic evaluation;
+- one derivative pair blocks typed reuse;
+- one unjudged active pair blocks typed reuse;
+- fresh semantic evaluations are capped at 66 per claim;
+- malformed/non-convergent semantic output cannot create a pair record;
+- typed reuse preserves explicit `from_claim_id` lineage;
+- typed reuse requires the upstream claim to be both `REUSE_READY` and frozen;
+- frozen basis rejects append, revoke, and pair mutation.
+
+## Frontend behavior
+
+The React/Vite UI mirrors the v2 contract roles and postconditions:
+
+- claim creation requires a distinct reviewer address and evidence digests;
+- source cards expose `binding_hash`, evidence digest, provenance state, and typed lineage;
+- reviewer-only attestation submits the exact stored binding hash;
+- reviewer-only revocation removes a source from the active basis while preserving history;
+- pair matrix shows every active source combination and whether it is unjudged, independent, or derivative;
+- freeze is enabled only for the author when the contract reports `reuse_ready = true`;
+- every write is followed by a contract read and required postcondition check; transaction submission/finalization alone is not treated as execution success.
+
+## Direct Mode proof
+
+Real GenVM Direct Mode was executed against the frozen v2 source with:
 
 ```text
-0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b
+Python          3.12.14
+genlayer-test   0.29.2
+GenVM SDK       v0.2.12
+Result          20 passed
 ```
 
-Explorer:
+The Direct Mode suite is in `tests/direct/` and covers derivative, unjudged, full independent matrix, attestation, revocation, replay, malformed semantic output, typed reuse, and frozen-basis mutation paths.
 
-```text
-https://explorer-studio.genlayer.com/address/0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b
-```
+`tests/direct/conftest.py` pins `sdk_version='v0.2.12'` because `genlayer-test 0.29.2` otherwise follows the latest GenVM release while its legacy Direct Mode loader expects the older `genvm-universal.tar.xz` asset name.
 
-### Frozen source parity
-
-Public repository contract file:
-
-```text
-contracts/SourceGate.py
-```
-
-Implementation/class and `get_config().name` remain:
-
-```text
-SourceIndependenceGate
-```
-
-Frozen contract SHA-256:
-
-```text
-ead0b54660d1ba82b3ffd6cf02a54da5ce89d898226da1b8b30cb2f60429208f
-```
-
-The clean project deployment and runtime-evidence deployment use this same
-frozen contract source.
-
-## What the contract decides
-
-Each newly judged source pair receives exactly one accepted semantic verdict:
-
-```text
-INDEPENDENT_CORROBORATION
-DERIVATIVE_SOURCE_CLUSTER
-```
-
-A claim becomes `VERIFIED` only when both deterministic conditions hold:
-
-```text
-independent_pairs >= 2
-distinct_independent_sources >= 3
-```
-
-`VERIFIED` is a one-way latch. It does not mean every source is mutually
-independent; unjudged pairs remain unknown.
-
-## Deterministic consequences and anti-reroll rules
-
-- Exact duplicate excerpts inside one claim are rejected.
-- Exact copy-paste of an unverified claim text as an external source is rejected.
-- An unverified claim cannot enter another claim through the typed
-  `add_verified_claim_source` path.
-- A verified claim can be reused through that typed path and the resulting
-  source stores its `from_claim_id` lineage.
-- Re-judging the same pair is a deterministic no-op.
-- Pair order is normalized, so `(A,B)` and `(B,A)` resolve to the same permanent
-  pair record.
-- Sources are append-only.
-- Threshold counters and the `VERIFIED` transition are deterministic contract
-  logic, not model decisions.
-
-## Semantic failure boundary
-
-The validator call is limited to one claim and two committed excerpts. Reference
-URLs never enter the consensus prompt and validators do not fetch external web
-content.
-
-The semantic response must match the expected object shape and one of the two
-allowed verdicts. Malformed/out-of-schema responses are rejected before the
-pair/cache/counter write path. Provider failure or non-convergence likewise does
-not become a semantic success. These failure branches are part of the frozen
-source control flow; the public runtime evidence does not claim that an
-artificial provider outage or malformed provider response was forced in
-production.
-
-## Runtime evidence summary
-
-The runtime-evidence deployment demonstrated:
-
-```text
-PASS  fresh get_config profile for version 1.2
-PASS  DERIVATIVE_SOURCE_CLUSTER path
-PASS  INDEPENDENT_CORROBORATION path
-PASS  no premature VERIFIED state
-PASS  threshold: 2 independent pairs across 3 distinct sources -> VERIFIED
-PASS  exact-pair replay without a new pair/counter write
-PASS  reverse-order pair replay without reroll
-PASS  prompt-injection-style excerpt contained by structured semantic output
-PASS  unverified typed reuse -> execution error/rollback -> no write
-PASS  exact-copy unverified bypass -> execution error/rollback -> no write
-PASS  verified typed reuse -> success with exact from_claim_id lineage
-PASS  VERIFIED remains true after later derivative evidence
-```
-
-The runtime also visibly demonstrates why consensus/finalization status must not
-be treated as execution success: rejected reuse/bypass calls reached accepted
-consensus on an `ERROR`/rollback result, and post-state remained unchanged.
-
-See [`TESTING.md`](./TESTING.md) for the reproducible sequence and observed
-postconditions.
-
-## Public dApp flow
-
-```text
-Connect wallet
--> Create claim with committed excerpts
--> Load finalized claim state
--> Judge one source pair per transaction
--> Accumulate deterministic coverage
--> VERIFIED
--> Reuse the verified claim through the typed provenance path
-```
-
-The frontend does not reserve Claim #1 as a hard-coded sample. On a clean
-registry, the first real user's Claim #1 remains a normal writable workspace for
-its author. Source additions require the claim author; pair judging remains
-public because the contract intentionally permits it.
-
-## Frontend transaction confirmation
-
-The UI does not treat a submitted/finalized transaction label as sufficient
-proof of execution success. It confirms actions through exact post-state:
-
-- claim creation resolves the resulting claim by exact `text + author`;
-- external-source writes wait for the exact resulting source record;
-- verified-claim reuse waits for matching `from_claim_id` plus claim text;
-- pair judgments wait for `get_pair_by_sources(...).judged`;
-- timeout messaging explicitly distinguishes a sent transaction from a
-  confirmed state change.
-
-## URLs and external content
-
-Reference URLs are human-facing metadata only:
-
-```text
-URLs in validator prompt: NO
-Web fetching by validators: NO
-```
-
-The frontend only renders clickable reference links for `http:` and `https:`.
-
-## Local development
+## Local frontend
 
 ```bash
-npm ci
-npm test
+npm install
+npm run test
 npm run build
 npm run dev
 ```
 
-The submission build is intentionally pinned in `src/config.ts` to the clean
-project deployment, avoiding a stale Vercel environment variable silently
-redirecting the final UI to a historical contract.
+Open the local Vite URL, connect MetaMask, and switch to GenLayer StudioNet when prompted.
 
-## Live site
+## Contract tests
 
-```text
-https://source-gate.vercel.app/
+Requires Python 3.12+:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+pytest tests/direct/ -q
 ```
 
-After deploying this repository revision, the top-bar/explorer link and live
-configuration panel should display the clean project deployment above, while the
-runtime-evidence link points to the separately tested deployment.
+Expected:
 
-## Honest scope
+```text
+20 passed
+```
 
-SourceGate records and adjudicates relationships between **committed excerpts**.
-It does not authenticate that an excerpt came from a real external document, it
-does not prove the truth of the underlying claim, and exact-text guards do not
-claim to defeat sophisticated paraphrasing.
+## Repository layout
+
+```text
+contracts/SourceGate.py       frozen SourceIndependenceGate v2 source
+src/                          SourceGate web client
+public/                       project assets
+scripts/                      deterministic contract audit scripts
+tests/direct/                 GenVM Direct Mode runtime suite
+tests/errors.test.mjs         frontend error-normalization tests
+requirements.txt              Direct Mode Python dependency pin
+TESTING.md                    exact reviewer-facing test path
+vercel.json                   StudioNet RPC rewrite for production
+```
+
+## Source parity rule
+
+Do not modify `contracts/SourceGate.py` without computing a new SHA-256 and rerunning the complete Direct Mode and StudioNet runtime proof. UI/docs changes must remain behaviorally consistent with the frozen v2 contract.

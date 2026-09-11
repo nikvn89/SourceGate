@@ -1,307 +1,246 @@
-# SourceGate — Runtime and Release Testing
+# SourceGate v2.0 — Testing Guide
 
-## Frozen release identity
+## Exact path
 
-```text
-Project: SourceGate
-Intelligent Contract implementation: SourceIndependenceGate
-Public contract filename: contracts/SourceGate.py
-Frozen SHA256: ead0b54660d1ba82b3ffd6cf02a54da5ce89d898226da1b8b30cb2f60429208f
-```
-
-Clean project deployment:
+Use three roles when possible:
 
 ```text
-0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a
+Wallet A = Author
+Wallet B = immutable Reviewer (must differ from Author)
+Wallet C = public pair judge / outsider
 ```
 
-Runtime evidence deployment:
+Connect the wallet **before** any write action. The frontend verifies contract postconditions after each write; a submitted or finalized transaction alone is not counted as success.
+
+## 1. Confirm deployment
+
+Open the app and check:
 
 ```text
-0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b
+contract = 0x0F011a04951320e194eB6EF279F3978e59A95350
+version = 2.0
 ```
 
-The clean deployment and runtime-evidence deployment are intentionally separate.
-Do not reproduce runtime tests on the clean project address.
-
-## Runtime profile
-
-`get_config()` on the runtime deployment returned the frozen R2 profile,
-including:
+Explorer:
 
 ```text
-name = SourceIndependenceGate
-version = 1.2
-required_independent_pairs = 2
-required_distinct_independent_sources = 3
-public_pair_judging = true
-sources_append_only_after_verification = true
-urls_enter_consensus_prompt = false
-global_admin = false
-clock_used = false
+https://explorer-studio.genlayer.com/address/0x0F011a04951320e194eB6EF279F3978e59A95350
 ```
 
-## Reproducible runtime sequence
-
-### 1. Create Claim #1 with three sources
-
-Claim:
+`get_config()` must expose the v2 rules, including:
 
 ```text
-Factory Y stopped production line 3 in June.
+reviewer_required = true
+complete_active_pair_matrix_required = true
+derivative_active_pair_blocks_typed_reuse = true
+unjudged_active_pair_blocks_typed_reuse = true
+typed_reuse_requires_frozen_basis = true
+min_active_sources_for_reuse = 3
+max_fresh_semantic_evals_per_claim = 66
+urls_fetched = false
 ```
 
-Sources:
+## 2. Author creates claim
+
+Connect **Wallet A**.
+
+Create a claim with **Wallet B** as reviewer and three external source bundles. Each bundle needs:
 
 ```text
-S1  Factory notice: production line 3 was suspended beginning June 2.
-S2  Report citing that factory notice: line 3 stopped operating in early June.
-S3  Safety-inspection record: line 3 did not receive operational clearance during the June inspection cycle.
+excerpt
+origin label
+reference locator / URL
+evidence digest = non-zero SHA-256, 64 hex characters
 ```
 
-Baseline post-state:
+Expected post-state:
 
 ```text
 source_count = 3
-pair_count = 0
-independent_pairs = 0
-derivative_pairs = 0
-verified = false
+active_source_count = 3
+attested_active_source_count = 0
+active_pair_target = 3
+judged_active_pairs = 0
+unjudged_active_pairs = 3
+reuse_ready = false
+basis_frozen = false
 ```
 
-### 2. Semantic verdict paths
-
-Judge `S1 + S2`:
+Every source starts:
 
 ```text
-DERIVATIVE_SOURCE_CLUSTER
+provenance_state = PROPOSED
+active = true
 ```
 
-Post-state:
+## 3. Pair judging before attestation must fail
+
+Connect **Wallet C** and try to judge any pair such as S1 ↔ S2 before reviewer attestation.
+
+Expected:
 
 ```text
-pair_count = 1
-derivative_pairs = 1
-independent_pairs = 0
-verified = false
+execution rejected
+pair_count unchanged
+semantic_eval_count unchanged
 ```
 
-Judge `S1 + S3`:
+Do not infer this only from transaction finalization; refresh the claim and verify the counters.
+
+## 4. Reviewer attests exact bindings
+
+Connect **Wallet B**.
+
+For S1, S2, and S3, click **Attest Exact Binding**. The UI submits the exact `binding_hash` already returned by the contract.
+
+Expected for each source:
 
 ```text
-INDEPENDENT_CORROBORATION
+provenance_state = ATTESTED
+active = true
+attested_by = Wallet B
 ```
 
-Post-state includes:
+After all three:
 
 ```text
-pair_count = 2
-independent_pairs = 1
-verified = false
+attested_active_source_count = 3
+unjudged_active_pairs = 3
+reuse_ready = false
 ```
 
-Judge the same `S1 + S3` pair again. The pair is not semantically rerolled and
-aggregate counters do not increase.
+This proves attestation alone is insufficient.
 
-Judge `S2 + S3`. The resulting positive coverage reaches the deterministic
-threshold:
+## 5. Unjudged pair blocks reuse
+
+Connect any wallet and judge only two of the three active pairs.
+
+Example:
 
 ```text
-pair_count = 3
-independent_pairs = 2
-derivative_pairs = 1
-distinct_independent_sources = 3
-verified = true
+S1 ↔ S2
+S1 ↔ S3
 ```
 
-### 3. Unverified typed-reuse consequence
-
-Create Claim #2, left unverified:
+If both are independent, expected state still includes:
 
 ```text
-Warehouse Z changed its overnight access procedure in July.
+judged_active_pairs = 2
+unjudged_active_pairs = 1
+reuse_ready = false
 ```
 
-Create Claim #3 as a downstream target. Its baseline was:
+Author freeze must remain unavailable/rejected.
+
+## 6A. Independent complete matrix path
+
+For a clean claim whose semantic evidence is genuinely independent, judge the third pair:
 
 ```text
-source_count = 1
-verified = false
+S2 ↔ S3
 ```
 
-Call:
+Expected only if all three pair verdicts are `INDEPENDENT_CORROBORATION`:
 
 ```text
-add_verified_claim_source(3, 2)
+judged_active_pairs = 3
+independent_active_pairs = 3
+derivative_active_pairs = 0
+unjudged_active_pairs = 0
+reuse_ready = true
 ```
 
-Observed execution:
+Connect **Wallet A** and click **Freeze Reuse Basis**.
+
+Expected post-state:
 
 ```text
-Consensus status: ACCEPTED
-Execution result: ERROR
-Rollback reason: Source claim must be VERIFIED before reuse
+basis_frozen = true
+reuse_ready = true
+basis_digest = non-empty
+frozen_active_source_count = 3
+frozen_pair_count = 3
 ```
 
-Postcondition:
+After freeze, add/revoke/judge mutation paths must be rejected.
+
+## 6B. Derivative pair blocks reuse
+
+On a separate claim, use at least one clearly derivative/common-origin pair or reuse the same evidence digest for two distinct source registrations.
+
+When any active pair resolves to `DERIVATIVE_SOURCE_CLUSTER`, expected:
 
 ```text
-get_claim(3).source_count = 1
+derivative_active_pairs >= 1
+reuse_ready = false
 ```
 
-This is explicit evidence that accepted/finalized consensus is not interpreted
-as successful execution.
+For identical evidence digests, the derivative verdict is deterministic and should not consume a fresh semantic evaluation for that pair.
 
-### 4. Exact-copy unverified bypass
+Author freeze must remain rejected.
 
-Attempt to add the exact Claim #2 text to Claim #3 through
-`add_external_source`.
+## 7. Reviewer revocation recovery
 
-Observed execution:
+Before freeze, **Wallet B** may revoke an attested source.
+
+Expected source state:
 
 ```text
-Consensus status: ACCEPTED
-Execution result: ERROR
-Rollback reason: Source text matches an unverified claim; verify it first
+provenance_state = REVOKED
+active = false
 ```
 
-Postcondition:
+The active pair target and readiness must recompute from the remaining active basis. Historical pair/source records remain readable.
+
+## 8. Typed reuse requires frozen upstream basis
+
+Create a downstream claim as **Wallet A**.
+
+Attempt to add another claim before its upstream basis is frozen.
+
+Expected:
 
 ```text
-get_claim(3).source_count = 1
+write rejected
+source_count unchanged
 ```
 
-### 5. Verified typed reuse and lineage
+Then add a claim that is both `REUSE_READY` and frozen.
 
-Call:
+Expected new source:
 
 ```text
-add_verified_claim_source(3, 1)
+kind = TYPED_CLAIM
+from_claim_id = upstream claim id
+provenance_state = PROPOSED
 ```
 
-Post-state:
+The downstream reviewer must still attest this typed source before it can participate in downstream pair judging.
+
+## 9. Replay protection
+
+Judge one pair once, then retry both:
 
 ```text
-get_claim(3).source_count = 2
+same order:    S1 ↔ S2
+reverse order: S2 ↔ S1
 ```
 
-`get_source(3, 2)` returned a source whose committed excerpt equals Claim #1 text
-and whose provenance field is:
+Expected for both retries:
 
 ```text
-from_claim_id = 1
-origin_label = Verified claim #1
+write rejected
+pair_count unchanged
+semantic_eval_count unchanged
 ```
 
-### 6. Prompt-injection containment and permanent pair record
+## 10. Production frontend smoke test
 
-Create Claim #4 with two excerpts, one containing an instruction-like string
-asking the model to ignore prior instructions and return non-JSON output.
+After Vercel deployment:
 
-Call:
-
-```text
-judge_pair(4, 1, 2)
-```
-
-Observed transaction:
-
-```text
-Result = SUCCESS
-Structured verdict = INDEPENDENT_CORROBORATION
-```
-
-The injected text did not replace the required semantic output shape.
-
-Post-state:
-
-```text
-source_count = 2
-pair_count = 1
-independent_pairs = 1
-derivative_pairs = 0
-distinct_independent_sources = 2
-verified = false
-```
-
-Replaying `judge_pair(4, 1, 2)` did not create another pair or increment counters.
-Calling the reverse order `judge_pair(4, 2, 1)` resolved to the same permanent
-pair record and verdict.
-
-### 7. One-way VERIFIED latch
-
-After Claim #1 had already become `VERIFIED`, append a fourth source and judge a
-new derivative pair.
-
-Observed final Claim #1 state:
-
-```text
-source_count = 4
-pair_count = 4
-independent_pairs = 2
-derivative_pairs = 2
-distinct_independent_sources = 3
-verified = true
-```
-
-The later derivative evidence does not revert the already reached deterministic
-VERIFIED latch.
-
-## Failure-path scope
-
-The frozen source validates the semantic response shape and allowed verdict enum
-before pair/cache/counter writes. Provider exceptions and non-convergence do not
-become semantic success. The production runtime sequence above did **not** force
-an artificial provider outage or malformed provider response, so this document
-does not label those cases as runtime-triggered evidence.
-
-## Clean project deployment check
-
-On the clean project address, verify only read state:
-
-```text
-get_config() matches version 1.2 profile
-claim_count = 0
-```
-
-Do not create claims or judge pairs on the clean address solely for testing; its
-purpose is to remain the public project baseline.
-
-## Frontend release checks
-
-The final frontend revision is designed around these acceptance conditions:
-
-```text
-frontend source is pinned to the clean project address
-there is no hard-coded read-only Claim #1 sample
-fresh claim creation confirms exact text + author post-state
-source writes confirm exact resulting source records
-pair judgment confirms get_pair_by_sources(...).judged
-UI does not equate submitted/finalized status with execution success
-runtime-evidence and frozen-source identifiers are visible in the live config panel
-```
-
-Release commands:
-
-```bash
-npm ci
-npm test
-npm run build
-```
-
-After Vercel deployment, smoke-test:
-
-```text
-https://source-gate.vercel.app/
-```
-
-Expected public state before any real user writes:
-
-```text
-clean project address = 0xb325DDa519E2D5BE1Ca8Fa24A1A1DE849113D48a
-claim_count = 0
-no attempt to call get_claim(1)
-first real Claim #1 remains writable by its author
-runtime evidence link = 0x5E7BA4f9D9B306DaDb2a56A3FCCb747960ac4f6b
-frozen SHA = ead0b54660d1ba82b3ffd6cf02a54da5ce89d898226da1b8b30cb2f60429208f
-```
+1. page loads without console/runtime error;
+2. deployment card shows v2.0 and the fresh contract address;
+3. Explorer link opens the same deployment;
+4. load an existing claim and verify source/basis metrics match Explorer/Studio reads;
+5. connect MetaMask and verify role label changes correctly for Author, Reviewer, and Public wallet;
+6. perform at least one reviewer attestation or public pair judgment and confirm the UI waits for the contract postcondition rather than treating submission/finalization as success.

@@ -5,17 +5,29 @@ export type Verdict =
   | 'DERIVATIVE_SOURCE_CLUSTER'
   | ''
 
+export type ProvenanceState = 'PROPOSED' | 'ATTESTED' | 'REVOKED'
+export type SourceKind = 'EXTERNAL' | 'TYPED_CLAIM'
+
 export interface GateConfig {
   name: string
   version: string
   semantic_verdicts: string[]
-  required_independent_pairs: number
-  required_distinct_independent_sources: number
-  max_sources_per_claim: number
-  max_source_excerpt_length: number
-  urls_enter_consensus_prompt: boolean
+  reviewer_required: boolean
+  reviewer_must_differ_from_author: boolean
+  external_source_attestation_required: boolean
+  evidence_digest_is_binding_not_external_verification: boolean
+  attested_provenance_metadata_enters_consensus_prompt: boolean
+  urls_fetched: boolean
+  complete_active_pair_matrix_required: boolean
+  derivative_active_pair_blocks_typed_reuse: boolean
+  unjudged_active_pair_blocks_typed_reuse: boolean
+  typed_reuse_requires_frozen_basis: boolean
+  reuse_ready_is_recomputable_before_freeze: boolean
+  min_active_sources_for_reuse: number
+  max_active_sources_per_claim: number
+  max_source_records_per_claim: number
+  max_fresh_semantic_evals_per_claim: number
   public_pair_judging: boolean
-  sources_append_only_after_verification: boolean
   global_admin: boolean
   clock_used: boolean
   claim_count: number
@@ -25,24 +37,54 @@ export interface GateConfig {
 export interface ClaimRecord {
   claim_id: number
   author: string
+  reviewer: string
   text: string
-  required_pairs: number
-  required_distinct_sources: number
-  independent_pairs: number
-  distinct_independent_sources: number
-  derivative_pairs: number
   source_count: number
+  active_source_count: number
+  attested_active_source_count: number
   pair_count: number
-  verified: boolean
+  historical_independent_pairs: number
+  historical_derivative_pairs: number
+  active_pair_target: number
+  judged_active_pairs: number
+  independent_active_pairs: number
+  derivative_active_pairs: number
+  unjudged_active_pairs: number
+  semantic_eval_count: number
+  reuse_ready: boolean
+  basis_frozen: boolean
+  basis_digest: string
+  frozen_active_source_count: number
+  frozen_pair_count: number
+  reuse_count: number
+}
+
+export interface ReuseBasis {
+  claim_id: number
+  reuse_ready: boolean
+  basis_frozen: boolean
+  basis_digest: string
+  active_source_count: number
+  attested_active_source_count: number
+  required_pair_count: number
+  judged_active_pairs: number
+  independent_active_pairs: number
+  derivative_active_pairs: number
+  unjudged_active_pairs: number
 }
 
 export interface SourceRecord {
-  claim_id: number
   source_index: number
   excerpt: string
   origin_label: string
   reference_url: string
+  evidence_digest: string
+  binding_hash: string
   from_claim_id: number
+  kind: SourceKind
+  provenance_state: ProvenanceState
+  active: boolean
+  attested_by: string
 }
 
 export interface PairSummary {
@@ -51,18 +93,19 @@ export interface PairSummary {
   source_a: number
   source_b: number
   verdict: Verdict
-  used_cache: boolean
+  semantic_eval_used: boolean
 }
 
 export interface PairLookup {
   judged: boolean
   pair_id: number
   verdict: Verdict
-  used_cache: boolean
+  semantic_eval_used: boolean
 }
 
 export interface DraftSource {
   excerpt: string
   origin_label: string
   reference_url: string
+  evidence_digest: string
 }
