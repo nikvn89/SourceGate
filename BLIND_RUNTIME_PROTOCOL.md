@@ -62,3 +62,19 @@ same/reverse pair replay -> refused
 ```
 
 For every transaction capture full Explorer hash, caller, method, expected outcome, observed outcome, and exact post-state.
+
+## On-chain commitment option
+
+A blind vector may be committed before the first semantic judgment in either of two auditable ways:
+
+1. commit the vector file hash to the repository before judgment; or
+2. register the exact claim/source data on-chain and complete the required Reviewer attestations before judgment.
+
+The final v2.1 run used option 2. Claim #1 and Claim #2 source bundles were on-chain before semantic calls, and the first successful judgment sealed the active basis. This prevents post-verdict source substitution while preserving the natural semantic test.
+
+## Final v2.1 natural outcomes
+
+- Claim #1: all three fresh semantic pairs returned `INDEPENDENT_CORROBORATION`; only the complete 3/3 matrix became `REUSE_READY`.
+- Claim #2: pair S2↔S3 returned `DERIVATIVE_SOURCE_CLUSTER`; the contract permanently set `derivative_history_blocked = true`. Subsequent Reviewer revocation could not remove the source/verdict, and Author freeze was refused.
+
+Exact transactions are recorded in `RUNTIME_EVIDENCE.md`.

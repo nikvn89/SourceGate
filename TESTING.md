@@ -294,3 +294,31 @@ Only after contract runtime proof passes:
 8. verify exact postconditions;
 9. capture fresh v2.1 screenshots in `snap/`;
 10. regenerate final checksums.
+
+## Executed v2.1 runtime result — PASS
+
+The final production run used the Vercel UI, MetaMask, and fresh StudioNet contract `0x90F760d90642325777a97Fb9640c5E3fB0d8c2A6`. Full transaction hashes, Explorer links, observed refusal wording, and exact post-state are in [`RUNTIME_EVIDENCE.md`](RUNTIME_EVIDENCE.md).
+
+Observed load-bearing results:
+
+```text
+27/27 real GenVM Direct Mode tests                         PASS
+Author self-attestation                                    REFUSED
+Public judge before complete Reviewer attestation          REFUSED / no pair/eval write
+First successful semantic judgment                         SEALED active basis
+Reviewer revoke after seal                                 REFUSED / no mutation
+Author append after seal                                   REFUSED / no mutation
+2 independent + 1 unjudged                                 reuse BLOCKED
+3/3 independent                                            REUSE_READY
+Same Author freeze before complete matrix                  REFUSED: Claim is not REUSE_READY
+Same Author freeze after complete matrix                   SUCCESS → FROZEN
+Author mutation after freeze                               REFUSED: Reusable provenance basis is frozen
+Typed reuse Claim #1 → Claim #2                            SUCCESS + explicit lineage
+Upstream Claim #1 reuse_count                              0 → 1
+Downstream typed source                                    required Reviewer attestation
+Natural Claim #2 S2↔S3                                     DERIVATIVE_SOURCE_CLUSTER
+Reviewer revoke after derivative                           no postcondition / verdict preserved
+Author freeze after derivative                             REFUSED: permanent derivative-history block
+```
+
+For this run, the semantic vector was committed **on-chain before judgment** through immutable claim/source registration and Reviewer attestation. The first successful judgment then sealed the exact active basis. A separate repo pre-judgment vector commit was therefore not required to establish immutability for these transactions.

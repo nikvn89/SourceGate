@@ -14,6 +14,7 @@ const sourceShaLine = read('SOURCE_SHA256.txt').trim()
 const config = read('src/config.ts')
 const pkg = JSON.parse(read('package.json'))
 const direct = read('tests/direct/test_steward_paths.py')
+const runtimeEvidence = read('RUNTIME_EVIDENCE.md')
 const snapDir = join(ROOT, 'snap')
 const checksumPath = join(ROOT, 'FINAL_CHECKSUMS.txt')
 
@@ -44,12 +45,15 @@ const testCount = (direct.match(/^def test_/gm) || []).length
 requireTrue(testCount >= 25, `expected >=25 Direct Mode tests, found ${testCount}`)
 
 if (existsSync(snapDir) && statSync(snapDir).isDirectory()) {
-  const pngs = readdirSync(snapDir).filter((x) => x.toLowerCase().endsWith('.png'))
-  // Runtime package may contain only fresh v2.1 screenshots as they are captured.
+  const runtimeShots = readdirSync(snapDir).filter((x) => /\.(?:png|jpe?g|webp)$/i.test(x))
+  requireTrue(runtimeShots.length >= 10, `expected >=10 fresh v2.1 runtime screenshots, found ${runtimeShots.length}`)
 }
+requireTrue(runtimeEvidence.includes('Status: FINAL RUNTIME PASS'), 'runtime evidence is not marked FINAL PASS')
+requireTrue(runtimeEvidence.includes('DERIVATIVE_SOURCE_CLUSTER'), 'runtime evidence missing derivative semantic proof')
+requireTrue(runtimeEvidence.includes('Claim has a permanent derivative-history block'), 'runtime evidence missing exact permanent derivative refusal')
 
 // FINAL_CHECKSUMS.txt is the immutable manifest of files that were actually
-// shipped in the PREDEPLOY ZIP. Local test/build artifacts created later by
+// shipped in the FINAL runtime ZIP. Local test/build artifacts created later by
 // `python -m venv`, `npm ci`, `npm test`, or `npm run build` are deliberately
 // ignored here. This lets `npm run check` verify the original package after a
 // normal local install without confusing generated directories with committed
@@ -71,7 +75,7 @@ for (const line of checksumLines) {
   requireTrue(!manifestPaths.has(rel), `duplicate checksum entry: ${rel}`)
   manifestPaths.add(rel)
   requireTrue(!/^(?:dist|node_modules|\.venv)(?:\/|$)/.test(rel), `generated directory was shipped in runtime manifest: ${rel}`)
-  requireTrue(!/(?:^|\/)__pycache__(?:\/|$)|\.pyc$/i.test(rel), `Python cache artifact was shipped in PREDEPLOY manifest: ${rel}`)
+  requireTrue(!/(?:^|\/)__pycache__(?:\/|$)|\.pyc$/i.test(rel), `Python cache artifact was shipped in FINAL manifest: ${rel}`)
   requireTrue(rel !== 'tests/.errors.mjs', 'generated frontend test artifact was shipped in runtime manifest')
   const abs = join(ROOT, ...rel.split('/'))
   if (!existsSync(abs)) {
@@ -111,4 +115,4 @@ console.log(`Contract SHA256: ${actualSha}`)
 console.log(`Direct Mode tests defined: ${testCount}`)
 console.log(`Runtime manifest files verified: ${manifestEntries.length}`)
 console.log('Runtime deployment: 0x90F760d90642325777a97Fb9640c5E3fB0d8c2A6')
-console.log('Runtime evidence: IN PROGRESS')
+console.log('Runtime evidence: FINAL PASS')

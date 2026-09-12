@@ -1,8 +1,8 @@
-# SourceGate v2.1 — PREDEPLOY
+# SourceGate v2.1 — FINAL RUNTIME
 
 SourceGate is a GenLayer dApp for building a reviewer-attested provenance basis before a claim can be reused as a typed source downstream.
 
-**Status:** v2.1 source is frozen and freshly deployed on StudioNet. Fresh runtime evidence is in progress; historical v2.0 deployments/screenshots are not valid proof for this source.
+**Status:** FINAL RUNTIME PASS. Frozen v2.1 source, real GenVM Direct Mode 27/27 PASS, fresh StudioNet deployment, production Vercel runtime, exact transaction evidence, causal freeze proof, typed reuse, and a natural permanent derivative-history block are all recorded. Historical v2.0 deployments/screenshots are not valid proof for this source.
 
 ## What v2.1 fixes
 
@@ -79,7 +79,7 @@ evidence digest
 
 The contract proves that the **designated Reviewer address** attested that exact immutable binding. It does **not** prove the reviewer's real-world identity, independence, reputation, qualification, or honesty. It does not fetch URLs or prove external truth.
 
-## PREDEPLOY identity
+## Frozen runtime identity
 
 ```text
 Project            SourceGate
@@ -135,7 +135,7 @@ PROMPT FENCE      0/22 bypasses
 MUTATION MATRIX   28/28 caught
 ```
 
-`npm run verify` also checks source SHA/config parity, v2.1 version pin, stale v1/v2 evidence, critical refusal-path UI behavior, Direct Mode test presence, PREDEPLOY snapshot hygiene, and obvious secret leakage.
+`npm run verify` also checks source SHA/config parity, v2.1 version pin, stale v1/v2 evidence, critical refusal-path UI behavior, Direct Mode test presence, fresh runtime snapshot presence, runtime evidence status, final manifest integrity, and obvious secret leakage.
 
 ## Frontend transaction rule
 
@@ -147,10 +147,36 @@ For critical safe negative paths, the UI may warn that refusal is expected but s
 
 Direct Mode mocks are used only to pin deterministic consequences. Production semantic proof must use actual StudioNet consensus with a blind runtime set created **after** the source is frozen and deployed. See `BLIND_RUNTIME_PROTOCOL.md`.
 
+
+## Final runtime evidence
+
+See [`RUNTIME_EVIDENCE.md`](RUNTIME_EVIDENCE.md) for the exact Vercel + MetaMask + StudioNet transaction table and [`snap/`](snap/) for fresh v2.1 screenshots.
+
+Final load-bearing runtime outcomes:
+
+```text
+Real GenVM Direct Mode                         27/27 PASS
+Wrong-role attestation                         REFUSED
+Judge before Reviewer attestation              REFUSED / no state write
+First semantic judgment seals active basis     PASS
+Reviewer revoke after seal                      REFUSED / no state write
+Author append after seal                        REFUSED / no state write
+2 positive + 1 unjudged                         BLOCKED
+Complete all-independent matrix                 REUSE_READY
+Same freeze call before / after gate            REFUSED → SUCCESS
+Frozen basis mutation                           REFUSED
+Typed reuse lineage + upstream reuse_count      PASS
+Downstream typed-source Reviewer attestation    PASS
+Natural DERIVATIVE_SOURCE_CLUSTER               PASS
+Permanent derivative-history freeze block       PASS
+```
+
+The runtime uses actual StudioNet semantic consensus. Direct Mode mocks pin deterministic consequence rules; they are not presented as production semantic proof.
+
 ## Repository layout
 
 ```text
-contracts/SourceGate.py       v2.1 candidate contract
+contracts/SourceGate.py       frozen v2.1 contract
 src/                          React/Vite client
 scripts/                      deterministic + release integrity gates
 tests/direct/                 real GenVM Direct Mode suite
@@ -158,7 +184,7 @@ LOCKED_SPEC.md                load-bearing behavioral invariants
 BUILD_RULES.md                strict reviewer build rules
 BLIND_RUNTIME_PROTOCOL.md     unseen/natural runtime protocol
 TESTING.md                    exact predeploy + runtime path
-snap/                         v2.1 evidence only; PREDEPLOY is empty/pending
+snap/                         fresh v2.1 runtime screenshots only
 ```
 
 ## Source parity rule
