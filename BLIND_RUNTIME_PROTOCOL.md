@@ -13,7 +13,7 @@ Prove that semantic outcomes are not passing because production inputs were copi
 3. Do not use equal evidence digests for the natural derivative case; that deterministic shortcut has a separate test.
 4. Use normal prose and realistic provenance metadata.
 5. Commit all source bundles on-chain before any pair is judged. Do not edit inputs after seeing verdicts.
-6. Record a SHA-256 commitment of the complete blind vector file before the first pair judgment; keep it in runtime evidence.
+6. Establish an auditable pre-judgment commitment before the first semantic call: either commit the complete blind-vector file SHA-256, or register the exact claim/source bundles on-chain and complete the required Reviewer attestations. Record which commitment mode was used in runtime evidence.
 
 ## Required natural cases
 

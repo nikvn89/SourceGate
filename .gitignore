@@ -10,3 +10,6 @@ vite.config.d.ts
 
 tests/.errors.mjs
 .DS_Store
+# Python cache artifacts
+__pycache__/
+*.py[cod]
