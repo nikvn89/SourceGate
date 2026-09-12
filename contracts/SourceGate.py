@@ -15,7 +15,7 @@ PROVENANCE_PROPOSED = "PROPOSED"
 PROVENANCE_ATTESTED = "ATTESTED"
 PROVENANCE_REVOKED = "REVOKED"
 
-CONTRACT_VERSION = "2.0"
+CONTRACT_VERSION = "2.1"
 
 MAX_CLAIM_LENGTH = 1200
 MAX_SOURCE_EXCERPT_LENGTH = 1200
@@ -45,6 +45,9 @@ class ClaimRecord:
     frozen_active_source_count: u256
     frozen_pair_count: u256
     reuse_count: u256
+    adjudication_started: bool
+    adjudication_basis_digest: str
+    derivative_history_blocked: bool
 
 
 @allow_storage
@@ -78,40 +81,45 @@ class PairRecord:
 
 class SourceIndependenceGate(gl.Contract):
     """
-    Authenticated provenance gate for typed claim reuse.
+    Reviewer-attested provenance gate for typed claim reuse.
 
     The contract separates three questions that v1.2 conflated:
 
-    1. AUTHORSHIP / PROVENANCE AUTHENTICATION
+    1. AUTHORSHIP / PROVENANCE ATTESTATION
        The claim author may register immutable source bundles, but external or
        typed sources do not enter the reusable provenance basis until a distinct,
-       immutable reviewer attests the exact on-chain source binding.
+       immutable reviewer address attests the exact on-chain source binding.
 
        For an external source the binding commits to:
          excerpt + origin label + reference locator + evidence SHA-256 identity.
 
        The contract does NOT fetch the URL, prove that an artifact exists, or
-       decide that the source is truthful. The authenticated reviewer is the
-       off-chain provenance-verification boundary and signs the exact binding.
+       decide that the source is truthful. The contract authenticates only that
+       the designated reviewer address attested the exact binding; it does not
+       authenticate real-world identity, independence, reputation, or truth.
 
     2. SEMANTIC INDEPENDENCE
        GenLayer consensus answers one narrow question for one exact pair of
        reviewer-attested active source bundles: independent corroboration or a
-       likely derivative/common-origin cluster. Exact pairs are permanently
-       locked, so exact or reversed pair replay cannot purchase another
-       semantic roll.
+       likely derivative/common-origin cluster. The first successful pair
+       judgment atomically seals the entire active + attested source basis; from
+       that point source membership and attestation state cannot be changed.
+       Exact pairs are permanently locked, so exact or reversed pair replay
+       cannot purchase another semantic roll.
 
     3. DETERMINISTIC TYPED-REUSE AUTHORIZATION
        A claim is REUSE_READY only when the entire ACTIVE provenance basis is
-       authenticated, contains at least three sources, and EVERY pair in that
+       reviewer-attested, contains at least three sources, and EVERY pair in that
        basis has been judged INDEPENDENT_CORROBORATION. One derivative pair or
        one unjudged pair blocks reuse.
 
-       REUSE_READY is not a positive-only irreversible latch. Adding a source,
-       revoking a source attestation, or producing a derivative verdict can make
-       it false again. The author must explicitly freeze a currently complete
-       basis before another claim can use it through the typed reuse path.
-       Freezing makes the exact reusable basis immutable and prevents TOCTOU.
+       Before adjudication starts, the Author may append sources and the Reviewer
+       may revoke proposed/attested sources. The first successful pair judgment
+       seals that exact basis, preventing adaptive append/revoke/cherry-picking
+       after any semantic result is learned. Any DERIVATIVE_SOURCE_CLUSTER verdict
+       permanently blocks freezing for that claim id. The Author must create a
+       fresh claim id to try a materially different basis. Final freeze commits
+       the complete all-independent pair matrix and prevents TOCTOU.
     """
 
     claim_counter: u256
@@ -291,6 +299,10 @@ class SourceIndependenceGate(gl.Contract):
         if claim.basis_frozen:
             raise gl.vm.UserError("Reusable provenance basis is frozen")
 
+    def _require_pre_adjudication(self, claim: ClaimRecord) -> None:
+        if claim.adjudication_started:
+            raise gl.vm.UserError("Adjudication basis is already sealed")
+
     def _source_binding_hash(
         self,
         excerpt: str,
@@ -321,6 +333,21 @@ class SourceIndependenceGate(gl.Contract):
                 count += 1
             idx += 1
         return count
+
+    def _source_has_pair_judgment(
+        self,
+        claim_id: u256,
+        source_index: int,
+    ) -> bool:
+        claim = self.claims[claim_id]
+        other = 1
+        while other <= int(claim.source_count):
+            if other != source_index:
+                pair_key = self._pair_lookup_key(claim_id, source_index, other)
+                if pair_key in self.pair_lookup:
+                    return True
+            other += 1
+        return False
 
     # ========================================================
     # DYNAMIC REUSE BASIS
@@ -376,6 +403,7 @@ class SourceIndependenceGate(gl.Contract):
             and unjudged_pairs == 0
             and derivative_pairs == 0
             and independent_pairs == pair_target
+            and not claim.derivative_history_blocked
         )
 
         return {
@@ -402,6 +430,27 @@ class SourceIndependenceGate(gl.Contract):
         claim.reuse_ready = bool(metrics["ready"])
         self.claims[claim_id] = claim
 
+    def _compute_adjudication_basis_digest(self, claim_id: u256) -> str:
+        claim = self.claims[claim_id]
+        metrics = self._basis_metrics(claim_id)
+        if metrics["active_source_count"] < MIN_ACTIVE_SOURCES_FOR_REUSE:
+            raise gl.vm.UserError("At least three active sources required before adjudication")
+        if metrics["attested_active_source_count"] != metrics["active_source_count"]:
+            raise gl.vm.UserError("All active sources must be reviewer-attested before adjudication")
+
+        parts = [
+            "SOURCEGATE_ADJUDICATION_BASIS_V2_1",
+            self._hash_text(claim.text),
+            str(claim.reviewer).lower(),
+            str(metrics["active_source_count"]),
+        ]
+        for idx in metrics["active_indices"]:
+            source = self.sources[self._source_key(claim_id, idx)]
+            parts.append(
+                f"S:{idx}:{source.binding_hash}:{source.kind}:{int(source.from_claim_id)}"
+            )
+        return self._hash_text("|".join(parts))
+
     def _compute_basis_digest(self, claim_id: u256) -> str:
         claim = self.claims[claim_id]
         metrics = self._basis_metrics(claim_id)
@@ -409,7 +458,8 @@ class SourceIndependenceGate(gl.Contract):
             raise gl.vm.UserError("Provenance basis is not complete")
 
         parts = [
-            "SOURCEGATE_REUSE_BASIS_V2",
+            "SOURCEGATE_REUSE_BASIS_V2_1",
+            claim.adjudication_basis_digest,
             self._hash_text(claim.text),
             str(claim.reviewer).lower(),
             str(metrics["active_source_count"]),
@@ -454,6 +504,7 @@ class SourceIndependenceGate(gl.Contract):
     ) -> u256:
         claim = self.claims[claim_id]
         self._require_mutable_basis(claim)
+        self._require_pre_adjudication(claim)
 
         if int(claim.source_count) >= MAX_SOURCE_RECORDS_PER_CLAIM:
             raise gl.vm.UserError("Source record limit reached")
@@ -513,6 +564,7 @@ class SourceIndependenceGate(gl.Contract):
     ) -> u256:
         claim = self.claims[claim_id]
         self._require_mutable_basis(claim)
+        self._require_pre_adjudication(claim)
 
         if isinstance(from_claim_id, bool) or from_claim_id <= 0:
             raise gl.vm.UserError("Invalid source claim id")
@@ -797,6 +849,9 @@ or
             frozen_active_source_count=u256(0),
             frozen_pair_count=u256(0),
             reuse_count=u256(0),
+            adjudication_started=False,
+            adjudication_basis_digest="",
+            derivative_history_blocked=False,
         )
         self.claim_text_index[claim_hash] = new_claim_id
 
@@ -887,6 +942,7 @@ or
         cid = self._require_claim(claim_id)
         claim = self.claims[cid]
         self._require_mutable_basis(claim)
+        self._require_pre_adjudication(claim)
 
         if gl.message.sender_address != claim.reviewer:
             raise gl.vm.UserError("Only claim reviewer may attest provenance")
@@ -919,6 +975,7 @@ or
         cid = self._require_claim(claim_id)
         claim = self.claims[cid]
         self._require_mutable_basis(claim)
+        self._require_pre_adjudication(claim)
 
         if gl.message.sender_address != claim.reviewer:
             raise gl.vm.UserError("Only claim reviewer may revoke provenance")
@@ -926,8 +983,15 @@ or
         source = self._get_source(cid, source_index)
         if not source.active:
             raise gl.vm.UserError("Source is already revoked")
-        if source.provenance_state != PROVENANCE_ATTESTED:
-            raise gl.vm.UserError("Only an attested source may be revoked")
+        if source.provenance_state not in (
+            PROVENANCE_PROPOSED,
+            PROVENANCE_ATTESTED,
+        ):
+            raise gl.vm.UserError("Source cannot be revoked")
+        if self._source_has_pair_judgment(cid, source_index):
+            raise gl.vm.UserError(
+                "Judged source is locked and cannot be revoked"
+            )
 
         source.active = False
         source.provenance_state = PROVENANCE_REVOKED
@@ -953,6 +1017,15 @@ or
             raise gl.vm.UserError("Invalid source index")
         if source_a == source_b:
             raise gl.vm.UserError("Source pair must contain two distinct sources")
+
+        # The first successful judgment seals the full active source basis.
+        # If any later step in this transaction reverts, GenVM atomic rollback
+        # must also roll this seal back.
+        if not claim.adjudication_started:
+            seal_digest = self._compute_adjudication_basis_digest(cid)
+            claim.adjudication_started = True
+            claim.adjudication_basis_digest = seal_digest
+            self.claims[cid] = claim
 
         a, b = self._normalized_pair(source_a, source_b)
         record_a = self._get_source(cid, a)
@@ -1014,6 +1087,7 @@ or
             claim.independent_pairs = u256(int(claim.independent_pairs) + 1)
         else:
             claim.derivative_pairs = u256(int(claim.derivative_pairs) + 1)
+            claim.derivative_history_blocked = True
 
         self.claims[cid] = claim
         self.pair_counter = new_pair_id
@@ -1032,6 +1106,15 @@ or
             raise gl.vm.UserError("Only claim author may freeze reuse basis")
         if claim.basis_frozen:
             raise gl.vm.UserError("Reusable provenance basis is already frozen")
+        if not claim.adjudication_started:
+            raise gl.vm.UserError("Adjudication basis has not been sealed")
+        if claim.derivative_history_blocked:
+            raise gl.vm.UserError(
+                "Claim has a permanent derivative-history block"
+            )
+        current_seal = self._compute_adjudication_basis_digest(cid)
+        if current_seal != claim.adjudication_basis_digest:
+            raise gl.vm.UserError("Adjudication basis digest mismatch")
 
         self._sync_reuse_ready(cid)
         claim = self.claims[cid]
@@ -1068,7 +1151,12 @@ or
             "attested_provenance_metadata_enters_consensus_prompt": True,
             "urls_fetched": False,
             "complete_active_pair_matrix_required": True,
+            "first_judgment_seals_active_basis": True,
+            "source_mutation_after_adjudication_blocked": True,
+            "freeze_rechecks_sealed_basis_digest": True,
             "derivative_active_pair_blocks_typed_reuse": True,
+            "historical_derivative_blocks_freeze": True,
+            "judged_source_revocation_blocked": True,
             "unjudged_active_pair_blocks_typed_reuse": True,
             "typed_reuse_requires_frozen_basis": True,
             "reuse_ready_is_recomputable_before_freeze": True,
@@ -1115,6 +1203,9 @@ or
                 int(claim.frozen_active_source_count),
             "frozen_pair_count": int(claim.frozen_pair_count),
             "reuse_count": int(claim.reuse_count),
+            "adjudication_started": claim.adjudication_started,
+            "adjudication_basis_digest": claim.adjudication_basis_digest,
+            "derivative_history_blocked": claim.derivative_history_blocked,
         }
 
     @gl.public.view
@@ -1128,6 +1219,9 @@ or
             "reuse_ready": claim.reuse_ready,
             "basis_frozen": claim.basis_frozen,
             "basis_digest": claim.basis_digest,
+            "adjudication_started": claim.adjudication_started,
+            "adjudication_basis_digest": claim.adjudication_basis_digest,
+            "derivative_history_blocked": claim.derivative_history_blocked,
             "active_source_count": metrics["active_source_count"],
             "attested_active_source_count":
                 metrics["attested_active_source_count"],
@@ -1156,6 +1250,7 @@ or
             "provenance_state": source.provenance_state,
             "active": source.active,
             "attested_by": str(source.attested_by),
+            "judgment_locked": self._source_has_pair_judgment(cid, source_index),
         }
 
     @gl.public.view
@@ -1190,6 +1285,7 @@ or
                 "provenance_state": source.provenance_state,
                 "active": source.active,
                 "attested_by": str(source.attested_by),
+                "judgment_locked": self._source_has_pair_judgment(cid, idx),
             })
             idx += 1
             remaining -= 1

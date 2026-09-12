@@ -1,6 +1,7 @@
 import { createClient } from 'genlayer-js'
 import { studionet } from 'genlayer-js/chains'
-import { CONTRACT_ADDRESS } from './config'
+import { TransactionHashVariant, TransactionStatus } from 'genlayer-js/types'
+import { CONTRACT_ADDRESS, EXPLORER_BASE } from './config'
 import { errorCode, normalizeError } from './errors'
 import type {
   Address,
@@ -132,7 +133,12 @@ async function write(account: Address, functionName: string, args: any[]) {
 }
 
 async function read<T>(functionName: string, args: any[]): Promise<T> {
-  const value = await readClient.readContract({ address: CONTRACT_ADDRESS, functionName, args })
+  const value = await readClient.readContract({
+    address: CONTRACT_ADDRESS,
+    functionName,
+    args,
+    transactionHashVariant: TransactionHashVariant.LATEST_FINAL,
+  })
   return value as T
 }
 
@@ -172,3 +178,95 @@ export const judgePair = (account: Address, claimId: number, sourceA: number, so
 
 export const freezeReuseBasis = (account: Address, claimId: number) =>
   write(account, 'freeze_reuse_basis', [claimId])
+
+/* --------------------------------------------------- execution inspection */
+
+const CONTRACT_ERRORS = [
+  'Reviewer must be a different wallet',
+  'Reviewer cannot be zero address',
+  'Duplicate claim text',
+  'At least one source is required',
+  'Too many initial sources',
+  'Only claim author may add sources',
+  'Source claim is not REUSE_READY',
+  'Source claim reuse basis is not frozen',
+  'Source claim basis digest is unavailable',
+  'Only claim reviewer may attest provenance',
+  'Source binding hash mismatch',
+  'Only claim reviewer may revoke provenance',
+  'Judged source is locked and cannot be revoked',
+  'Both sources must be reviewer-attested before pair judging',
+  'Source pair is already judged',
+  'Semantic evaluation ceiling reached',
+  'Invalid consensus result',
+  'Invalid consensus verdict',
+  'Only claim author may freeze reuse basis',
+  'Reusable provenance basis is already frozen',
+  'Claim has a permanent derivative-history block',
+  'Claim is not REUSE_READY',
+  'Reusable provenance basis is frozen',
+  'Registered claim text must use typed reuse path',
+  'Duplicate source binding for this claim',
+  'Source record limit reached',
+  'Active source limit reached',
+  'Source is already revoked',
+  'Source cannot be revoked',
+  'Source is not awaiting attestation',
+  'Revoked source cannot be attested',
+  'Pair contains a revoked source',
+  'Source pair must contain two distinct sources',
+  'Invalid source index',
+  'Invalid claim id',
+  'Invalid source claim id',
+  'Claim cannot source itself',
+  'Evidence digest cannot be zero',
+  'Evidence digest must be 32-byte hex',
+]
+
+function collectStrings(value: unknown, out: string[], depth = 0): string[] {
+  if (depth > 8 || out.length > 4000) return out
+  if (typeof value === 'string') {
+    out.push(value)
+  } else if (Array.isArray(value)) {
+    if (value.length && value.every((item) => typeof item === 'number')) {
+      try { out.push(new TextDecoder().decode(Uint8Array.from(value as number[]))) } catch { /* not bytes */ }
+    }
+    value.forEach((item) => collectStrings(item, out, depth + 1))
+  } else if (value && typeof value === 'object') {
+    Object.values(value as Record<string, unknown>).forEach((item) => collectStrings(item, out, depth + 1))
+  }
+  return out
+}
+
+export function executionErrorDetail(receipt: unknown, fallback = '') {
+  const haystack = collectStrings(receipt, [])
+  for (const text of haystack) {
+    for (const known of CONTRACT_ERRORS) {
+      if (text.includes(known)) return known
+    }
+  }
+  return fallback
+}
+
+export async function waitFinalized(txHash: `0x${string}`) {
+  const receipt = await (readClient as any).waitForTransactionReceipt({
+    hash: txHash,
+    status: TransactionStatus.FINALIZED,
+    interval: 5_000,
+    retries: 240,
+    fullTransaction: true,
+  })
+  let merged: any = receipt
+  try {
+    merged = { ...receipt, _transaction: await (readClient as any).getTransaction({ hash: txHash }) }
+  } catch {
+    /* receipt alone is sufficient for postcondition + contract-error inspection */
+  }
+  console.log('[SourceGate] finalized', txHash, merged)
+  return merged
+}
+
+export function txExplorerUrl(hash: string) {
+  return `${EXPLORER_BASE}/tx/${hash}`
+}
+

@@ -19,7 +19,12 @@ export interface GateConfig {
   attested_provenance_metadata_enters_consensus_prompt: boolean
   urls_fetched: boolean
   complete_active_pair_matrix_required: boolean
+  first_judgment_seals_active_basis: boolean
+  source_mutation_after_adjudication_blocked: boolean
+  freeze_rechecks_sealed_basis_digest: boolean
   derivative_active_pair_blocks_typed_reuse: boolean
+  historical_derivative_blocks_freeze: boolean
+  judged_source_revocation_blocked: boolean
   unjudged_active_pair_blocks_typed_reuse: boolean
   typed_reuse_requires_frozen_basis: boolean
   reuse_ready_is_recomputable_before_freeze: boolean
@@ -57,6 +62,9 @@ export interface ClaimRecord {
   frozen_active_source_count: number
   frozen_pair_count: number
   reuse_count: number
+  adjudication_started: boolean
+  adjudication_basis_digest: string
+  derivative_history_blocked: boolean
 }
 
 export interface ReuseBasis {
@@ -64,6 +72,9 @@ export interface ReuseBasis {
   reuse_ready: boolean
   basis_frozen: boolean
   basis_digest: string
+  adjudication_started: boolean
+  adjudication_basis_digest: string
+  derivative_history_blocked: boolean
   active_source_count: number
   attested_active_source_count: number
   required_pair_count: number
@@ -85,6 +96,7 @@ export interface SourceRecord {
   provenance_state: ProvenanceState
   active: boolean
   attested_by: string
+  judgment_locked: boolean
 }
 
 export interface PairSummary {

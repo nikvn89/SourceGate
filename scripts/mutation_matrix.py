@@ -1,4 +1,4 @@
-"""Structural mutation checks for load-bearing v2 guards.
+"""Structural mutation checks for load-bearing v2.1 guards.
 
 This local gate proves the source-policy checker detects removal of each named
 security mechanism. Real behavioral mutants belong in Direct Mode.
@@ -20,8 +20,18 @@ def policy(text):
         'Only claim reviewer may revoke provenance',
         'Both sources must be reviewer-attested before pair judging',
         'record_a.evidence_digest == record_b.evidence_digest',
+        'first_judgment_seals_active_basis',
+        'source_mutation_after_adjudication_blocked',
+        'freeze_rechecks_sealed_basis_digest',
+        'Adjudication basis digest mismatch',
+        'Adjudication basis is already sealed',
         'unjudged_active_pair_blocks_typed_reuse',
         'derivative_active_pair_blocks_typed_reuse',
+        'historical_derivative_blocks_freeze',
+        'judged_source_revocation_blocked',
+        'Judged source is locked and cannot be revoked',
+        'claim.derivative_history_blocked = True',
+        'Claim has a permanent derivative-history block',
         'Source claim is not REUSE_READY',
         'Source claim reuse basis is not frozen',
         'Only claim author may freeze reuse basis',
@@ -43,8 +53,18 @@ mutants=[
  ('reviewer revocation','Only claim reviewer may revoke provenance'),
  ('attested pair gate','Both sources must be reviewer-attested before pair judging'),
  ('same artifact derivative','record_a.evidence_digest == record_b.evidence_digest'),
+ ('first judgment seals basis','first_judgment_seals_active_basis'),
+ ('post-adjudication source mutation config','source_mutation_after_adjudication_blocked'),
+ ('freeze sealed-digest recheck','freeze_rechecks_sealed_basis_digest'),
+ ('sealed digest mismatch refusal','Adjudication basis digest mismatch'),
+ ('adjudication mutation refusal','Adjudication basis is already sealed'),
  ('unjudged block','unjudged_active_pair_blocks_typed_reuse'),
  ('derivative block','derivative_active_pair_blocks_typed_reuse'),
+ ('historical derivative freeze block','historical_derivative_blocks_freeze'),
+ ('judged source lock config','judged_source_revocation_blocked'),
+ ('judged source lock enforcement','Judged source is locked and cannot be revoked'),
+ ('derivative history latch','claim.derivative_history_blocked = True'),
+ ('freeze derivative-history refusal','Claim has a permanent derivative-history block'),
  ('reuse ready gate','Source claim is not REUSE_READY'),
  ('freeze gate','Source claim reuse basis is not frozen'),
  ('author freeze','Only claim author may freeze reuse basis'),
