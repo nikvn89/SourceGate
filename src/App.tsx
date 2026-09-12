@@ -195,6 +195,7 @@ export default function App() {
   const onLoadClaim = async () => {
     const id = Number(claimInput)
     if (!Number.isInteger(id) || id <= 0) return setError('Enter a valid claim id.')
+    setAction({ phase: 'idle', label: 'Ready' })
     await refreshClaim(id)
   }
 
